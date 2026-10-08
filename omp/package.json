@@ -1,0 +1,8 @@
+{
+  "name": "omp-notification-sound",
+  "version": "0.2.0",
+  "description": "Oh My Pi extension: sound and desktop notification when OMP finishes, fails, or asks a question.",
+  "type": "module",
+  "main": "index.ts",
+  "license": "MIT"
+}
