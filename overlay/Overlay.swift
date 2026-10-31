@@ -4,7 +4,7 @@
 // or a two-finger swipe to the right.
 // Usage: notify-overlay <class> <title> <message> [icon] [slot]
 //   class  done | progress | question | failed | quiet
-//   icon   claude (icons/claude.png), or a path to an .app or image file
+//   icon   a name from icons/ (claude, omp), or a path to an .app or image file
 //   slot   0, 1, 2 … stacks banners when several are on screen at once
 // Built by install.sh into bin/notify-overlay (needs macOS 26 for Liquid Glass;
 // older macOS falls back to a blurred material).
@@ -49,9 +49,9 @@ func sparkIcon(size: CGFloat) -> NSImage {
 
 func icon(size: CGFloat) -> NSImage {
   let fm = FileManager.default
-  if iconArg == "claude" {
+  if !iconArg.contains("/") { // a name: icons/<name>.png in this repo
     let repo = URL(fileURLWithPath: args[0]).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
-    if let img = NSImage(contentsOf: repo.appendingPathComponent("icons/claude.png")) { return img }
+    if let img = NSImage(contentsOf: repo.appendingPathComponent("icons/\(iconArg).png")) { return img }
   }
   if iconArg.hasSuffix(".app"), fm.fileExists(atPath: iconArg) { return NSWorkspace.shared.icon(forFile: iconArg) }
   if fm.fileExists(atPath: iconArg), let img = NSImage(contentsOfFile: iconArg) { return img }
@@ -157,12 +157,18 @@ final class BannerView: NSView {
 }
 
 // Content: icon, bold title, message. Text colors follow light/dark mode.
-// The class color is a thin wash over the glass (NSGlassEffectView.tintColor barely shows).
-let tintAlpha: CGFloat = 0.22
+// The class color fades from the icon side to almost clear on the right
+// (NSGlassEffectView.tintColor barely shows, so it's a gradient layer instead).
 let content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
 content.wantsLayer = true
-content.layer?.backgroundColor = tint.withAlphaComponent(tintAlpha).cgColor
 content.layer?.cornerRadius = radius
+let wash = CAGradientLayer()
+wash.frame = content.bounds
+wash.cornerRadius = radius
+wash.colors = [tint.withAlphaComponent(0.45).cgColor, tint.withAlphaComponent(0.04).cgColor]
+wash.startPoint = CGPoint(x: 0, y: 0.5)
+wash.endPoint = CGPoint(x: 1, y: 0.5)
+content.layer?.addSublayer(wash)
 let iv = NSImageView(frame: NSRect(x: 13, y: (h - 38) / 2, width: 38, height: 38))
 iv.image = icon(size: 38)
 iv.imageScaling = .scaleProportionallyUpOrDown

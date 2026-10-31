@@ -2,9 +2,11 @@
  * OMP Notification Sound Extension
  *
  * Plays a sound and sends a desktop notification when OMP finishes, fails, or
- * asks you a question, with the same titles and messages as ../notify.sh uses
- * for Claude Code, Droid and Grok. macOS uses afplay + osascript; other
- * platforms can use a custom sound command and in-app OMP notifications.
+ * asks you a question, with the same titles, messages, sounds and glass banner
+ * (../bin/notify-overlay, green/red/blue by class) as ../notify.sh uses for
+ * Claude Code, Droid and Grok. Without the banner binary it falls back to
+ * osascript; other platforms can use a custom sound command and in-app
+ * OMP notifications.
  *
  * Works with no config. To override, add to ~/.omp/agent/config.yml
  * (values shown are the defaults):
@@ -24,10 +26,11 @@
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -225,13 +228,13 @@ function notify(ctx: CommandContext | undefined, message: string, level: NotifyL
   ctx?.ui?.notify?.(message, level);
 }
 
-function playSound(config: NotificationSoundConfig, reason: string): { played: boolean; reason?: string } {
+function playSound(config: NotificationSoundConfig, reason: string, cls: NotifyClass = "done"): { played: boolean; reason?: string } {
   if (!config.enabled) return { played: false, reason: "disabled" };
 
   const now = Date.now();
   if (now - lastPlayedAt < config.cooldownMs) return { played: false, reason: "cooldown" };
 
-  const command = resolveSoundCommand(config);
+  const command = resolveSoundCommand(config, cls);
   if (!command) return { played: false, reason: "unsupported-platform-or-missing-sound" };
 
   const started = spawnDetached(command.command, command.args);
@@ -241,14 +244,14 @@ function playSound(config: NotificationSoundConfig, reason: string): { played: b
   return { played: true, reason };
 }
 
-function sendDesktopNotification(config: NotificationSoundConfig, reason: string): { sent: boolean; reason?: string } {
+function sendDesktopNotification(config: NotificationSoundConfig, reason: string, cls: NotifyClass = "done"): { sent: boolean; reason?: string } {
   if (!config.enabled) return { sent: false, reason: "disabled" };
   if (!config.desktopNotification.enabled) return { sent: false, reason: "desktop-notification-disabled" };
 
   const now = Date.now();
   if (now - lastNotifiedAt < config.cooldownMs) return { sent: false, reason: "cooldown" };
 
-  const command = resolveDesktopNotificationCommand(config);
+  const command = resolveDesktopNotificationCommand(config, cls);
   if (!command) return { sent: false, reason: "unsupported-platform" };
 
   const started = spawnDetached(command.command, command.args);
@@ -279,22 +282,50 @@ function spawnDetached(command: string, args: string[]): { ok: true } | { ok: fa
   }
 }
 
-function resolveSoundCommand(config: NotificationSoundConfig): { command: string; args: string[] } | null {
+type NotifyClass = "done" | "failed" | "question";
+
+// Same per-class sounds as notify.sh; a custom `sound` in config.yml wins for "done".
+const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done">, string> = {
+  failed: "/System/Library/Sounds/Basso.aiff",
+  question: "/System/Library/Sounds/Submarine.aiff",
+};
+
+// The extension folder is a symlink into the agent-notification-sound repo.
+const OVERLAY = (() => {
+  try {
+    return join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..", "bin", "notify-overlay");
+  } catch {
+    return "";
+  }
+})();
+
+function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
   if (config.command?.command) {
     return { command: config.command.command, args: config.command.args ?? [] };
   }
 
   if (platform() !== "darwin") return null;
-  if (!existsSync(config.sound)) return null;
+  const sound = cls === "done" ? config.sound : CLASS_SOUNDS[cls];
+  if (!existsSync(sound)) return null;
 
   return {
     command: "afplay",
-    args: ["-v", String(config.volume), config.sound],
+    args: ["-v", String(config.volume), sound],
   };
 }
 
-function resolveDesktopNotificationCommand(config: NotificationSoundConfig): { command: string; args: string[] } | null {
+function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
   if (platform() !== "darwin") return null;
+
+  if (OVERLAY && existsSync(OVERLAY)) {
+    // Stack below banners already on screen, like notify.sh does.
+    let slot = 0;
+    try {
+      slot = execFileSync("/usr/bin/pgrep", ["-x", "notify-overlay"], { encoding: "utf8" }).trim().split("\n").length;
+    } catch {} // pgrep exits 1 when none are running
+    const { title, message } = config.desktopNotification;
+    return { command: OVERLAY, args: [cls, title, message, "omp", String(slot)] };
+  }
 
   return {
     command: "/usr/bin/osascript",
@@ -336,11 +367,18 @@ function handleEvent(eventName: string, ctx: CommandContext | undefined, event?:
 
   // Same three messages as the Claude/Droid/Grok hooks: completed, failed, asks a question.
   let message = config.desktopNotification.message;
-  if (eventName === "tool_execution_start") message = config.desktopNotification.questionMessage;
+  let cls: NotifyClass = "done";
+  if (eventName === "tool_execution_start") {
+    message = config.desktopNotification.questionMessage;
+    cls = "question";
+  }
   if (eventName === "agent_end") {
     const last = [...(event?.messages ?? [])].reverse().find((m) => m.role === "assistant");
     if (last?.stopReason === "aborted") return; // you interrupted it; no "done" ping
-    if (last?.stopReason === "error") message = config.desktopNotification.failedMessage;
+    if (last?.stopReason === "error") {
+      message = config.desktopNotification.failedMessage;
+      cls = "failed";
+    }
   }
 
   // `{project}` -> session folder name, matching the other hooks' "<Tool> [folder]" title.
@@ -348,12 +386,12 @@ function handleEvent(eventName: string, ctx: CommandContext | undefined, event?:
   config.desktopNotification.title = config.desktopNotification.title.replaceAll("{project}", project);
   config.desktopNotification.message = message.replaceAll("{project}", project);
 
-  const notificationResult = sendDesktopNotification(config, eventName);
+  const notificationResult = sendDesktopNotification(config, eventName, cls);
   if (!notificationResult.sent && notificationResult.reason && notificationResult.reason !== "cooldown" && notificationResult.reason !== "disabled" && notificationResult.reason !== "desktop-notification-disabled") {
     notify(ctx, `${LABEL}: desktop notification skipped (${notificationResult.reason})`, "warning");
   }
 
-  const soundResult = playSound(config, eventName);
+  const soundResult = playSound(config, eventName, cls);
   if (!soundResult.played && soundResult.reason && soundResult.reason !== "cooldown" && soundResult.reason !== "disabled") {
     notify(ctx, `${LABEL}: sound skipped (${soundResult.reason})`, "warning");
   }
