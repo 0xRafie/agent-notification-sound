@@ -5,8 +5,7 @@ macOS notifications for coding agents that tell you *why* they pinged. A finishe
 Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok.
 
 <p align="center">
-  <img src="docs/classes-dark.png" width="400" alt="Five Claude Code banners: task completed (green), replied with 2 subagents still running (orange), asks a question (blue), task failed (red), scheduled check (grey)">
-  <img src="docs/classes-light.png" width="400" alt="The same five banners over a light background">
+  <img src="docs/hero.png" width="420" alt="Five banners: Claude task completed (green), Codex replied with 2 subagents still running (orange), Droid asks a question (blue), OMP task failed (red), Grok scheduled check (grey)">
 </p>
 
 ## Notification classes
@@ -25,25 +24,22 @@ Permission prompts, idle reminders and turns you interrupt stay silent.
 
 ## Supported agents
 
-<p align="center">
-  <img src="docs/agents.png" width="400" alt="Banners for Claude Code, Codex, Droid and OMP, each with its own icon">
-</p>
-
 | Agent | Hooked into | Done | Still running | Question | Failed | Quiet |
 |---|---|---|---|---|---|---|
 | Claude Code | `~/.claude/settings.json` | ✓ | subagents, shells, workflows | `AskUserQuestion` | ✓ | cron/loop, Monitor events |
 | Codex CLI | `~/.codex/hooks.json` | ✓ | subagents | `request_user_input` | — | `/goal` steps |
 | Factory Droid | `~/.factory/hooks.json` | ✓ | subagents, background commands | `AskUser` | — | Loop/cron prompts |
 | Oh My Pi | extension in `~/.omp/agent/extensions/` | ✓ | async jobs (subagents, shells) | `ask` | ✓ | `/loop` runs |
-| Grok | `~/.grok/hooks/` | ✓ | — | `ask_user_question` | ✓ | — |
+| Grok | `~/.grok/hooks/` | ✓ | subagents, shells | `ask_user_question` | ✓ | `/loop`, monitor events, `/goal` steps |
 
-A dash means the agent has no event for it. Codex and Droid don't report failed turns, and Grok doesn't expose background work.
+A dash means the agent has no event for it: Codex and Droid don't report failed turns.
 
 ### How each agent's classes are detected
 
 - **Claude Code**: `turnOrigin` in the transcript says whether you, a finished background task or a cron job started the turn. `background_tasks` in the `Stop` input lists what is still running. Monitors are long-lived watchers, so they don't count as running work.
 - **Codex**: a turn with no user message while a `/goal` is active is a goal step. Codex doesn't list running subagents, so the hook keeps a count from `SubagentStart` and `SubagentStop`. Only the terminal app notifies. `codex exec` runs and the ChatGPT/Codex desktop app, which has its own notifications, stay quiet.
 - **Droid**: the last user message in the transcript is checked. An `execute-completion:` id means a background command, "Background task completed." means a subagent, and text equal to one of the session's cron prompts means a Loop tick. `background-processes.json` and `task-invocations.json` show what still runs.
+- **Grok**: `chat_history.jsonl`, next to the transcript, tags every turn Grok starts by itself with a `synthetic_reason`: `task_completed`, `subagent_completed`, `notification_drain`, `scheduler_fired`, `goal_summary` or `goal_classifier_nudge` (see `SyntheticReason` in [grok-build](https://github.com/xai-org/grok-build)). `backgroundTasks` in the `Stop` input shows what still runs.
 - **OMP**: an `async-result` message means a background job finished, and the same prompt twice in a row means a `/loop` run. `ctx.getAsyncJobSnapshot()` shows what still runs.
 
 ## The banner
@@ -94,7 +90,7 @@ After installing:
 
 - **Messages and sounds** live at the top of `notify.sh`, and in the header of `omp/index.ts` for OMP. OMP can also be configured from `~/.omp/agent/config.yml`.
 - **Colors and timing** of the banner live in `overlay/Overlay.swift`. Run `install.sh` again to rebuild after changing them.
-- **Icons** are in `icons/`. Droid and Grok use their app's own icon.
+- **Icons** are in `icons/`. Droid uses the icon of the installed Factory app.
 
 ## Tests
 
@@ -110,7 +106,7 @@ Runs every class for every agent against fixture transcripts in dry-run mode (`N
 notify.sh             hook for Claude Code, Codex, Droid and Grok
 omp/index.ts          OMP extension
 overlay/Overlay.swift glass banner, built into bin/notify-overlay
-icons/                Claude Code (Clawd), Codex and OMP icons
+icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks
 test.sh               dry-run tests
 docs/                 screenshots for this README
@@ -118,6 +114,6 @@ docs/                 screenshots for this README
 
 ## Credits
 
-The icons belong to their owners: Clawd and Claude Code to Anthropic, Codex to OpenAI (taken from the ChatGPT app), OMP to the oh-my-pi project (omp.sh), and Droid's icon is read from the installed Factory app. They are here only to label each agent's notifications.
+The icons belong to their owners: Clawd and Claude Code to Anthropic, Codex to OpenAI (taken from the ChatGPT app), Grok to xAI (grok.com), OMP to the oh-my-pi project (omp.sh), and Droid's icon is read from the installed Factory app. They are here only to label each agent's notifications.
 
 This repo replaces `droid-notification-sound` and `omp-notification-sound`.

@@ -6,9 +6,10 @@
 #   done      "<Tool> task completed"                     fx-ok01.wav
 #   failed    "<Tool> task failed"                        Basso
 #   question  "<Tool> asks a question"                    Submarine
-#   progress  "Claude replied · 2 subagents still running" Tink   (Claude, Droid, Codex)
+#   progress  "Claude replied · 2 subagents still running" Tink   (all but OMP's own copy in omp/)
 #             "Droid subagent finished · 1 shell still running"
 #   quiet     "Claude scheduled check" / "Claude monitor event" / "Codex goal step"   no sound
+#             (Grok has all three)
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
@@ -127,6 +128,45 @@ droid_stop() {
                [ "$shells" -gt 0 ] && printf '%s shell%s\n' "$shells" "$([ "$shells" -gt 1 ] && echo s)"; } | paste -sd, - | sed 's/,/, /g')
 }
 
+# Grok: chat_history.jsonl (next to transcriptPath) tags turns Grok started
+# itself with synthetic_reason (see SyntheticReason in grok-build's
+# xai-grok-sampling-types/src/conversation.rs): task_completed (background
+# command), subagent_completed, notification_drain (monitor events or commands
+# that ended while idle), scheduler_fired (/loop), goal_summary and
+# goal_classifier_nudge (/goal steps). The Stop input lists running work in
+# backgroundTasks (camelCase).
+grok_stop() {
+  local chat line reason text
+  chat="$(dirname "$(field '.transcriptPath // .transcript_path')")/chat_history.jsonl"
+  [ -f "$chat" ] && line=$(tail -c 8000000 "$chat" | /usr/bin/grep -a '"prompt_index"' | tail -n 1)
+  reason=$(printf '%s' "$line" | /usr/bin/jq -r '.synthetic_reason // ""' 2>/dev/null)
+  text=$(printf '%s' "$line" | /usr/bin/jq -r '.content | if type == "array" then map(.text? // "") | join(" ") else . end' 2>/dev/null)
+  case "$reason" in
+    # Wording from grok-build crates/codegen/xai-grok-tools/src/reminders/task_completion.rs
+    task_completed) origin=finished what="background command"
+      case "${text%%$'\n'*}" in
+        *"(exit code: 0)"*) ;;
+        *"(exit code:"*) verb=failed ;;
+        *"(terminated by signal"*) verb=stopped ;;
+      esac ;;
+    subagent_completed) origin=finished
+      case "${text%%$'\n'*}" in
+        *") completed with failure."*) verb=failed ;;
+        *") was cancelled."*) verb=cancelled ;;
+      esac ;;
+    # Batched monitor events and/or background commands that ended while idle.
+    notification_drain)
+      case "$text" in *"monitor event"*) origin=monitor ;; *) origin=finished what="background command" ;; esac ;;
+    scheduler_fired) origin=scheduled ;;
+    goal_summary | goal_classifier_nudge) origin=goal ;;
+  esac
+  running=$(printf '%s' "$input" | /usr/bin/jq -r '
+    [(.backgroundTasks // [])[] | select(.status == "running" or .status == "pending") | select(.type != "monitor")]
+    | group_by(.type)
+    | map("\(length) \(.[0].type)\(if length > 1 then "s" else "" end)")
+    | join(", ")' 2>/dev/null)
+}
+
 # Codex: a turn with no UserMessage of its own was started by Codex itself;
 # while a /goal is active that is a goal step. Running subagents come from the
 # files kept by SubagentStart/SubagentStop (older than 12 h count as stale).
@@ -150,7 +190,7 @@ case "$(field .hook_event_name)" in
   Stop)
     # Grok also fires Stop when the session ends; only a finished turn counts.
     if [ "$tool" = grok ] && [ "$(field .reason)" != end_turn ]; then exit 0; fi
-    case "$tool" in claude) claude_stop ;; droid) droid_stop ;; codex) codex_stop ;; esac
+    case "$tool" in claude) claude_stop ;; droid) droid_stop ;; codex) codex_stop ;; grok) grok_stop ;; esac
     case "$origin" in
       scheduled) class=quiet message="$name scheduled check" ;;
       goal) class=quiet message="$name goal step" ;;
@@ -203,7 +243,7 @@ overlay="$(dirname "$0")/bin/notify-overlay"
 if [ -x "$overlay" ]; then
   case "$tool" in
     droid) icon=/Applications/Factory.app ;;
-    grok) icon="/Applications/Grok Bot.app" ;;
+    grok) icon=grok ;;
     codex) icon=codex ;;
     *) icon=claude ;;
   esac

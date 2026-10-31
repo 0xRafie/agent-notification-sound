@@ -82,6 +82,34 @@ t "codex 1 running"       codex "$(C Stop ctui)"      "progress|Codex [proj]|Cod
 printf '%s' "$(C SubagentStop ctui A2)" | NOTIFY_DRY_RUN=1 bash "$N" codex
 t "codex none running"    codex "$(C Stop ctui)"      "done|Codex [proj]|Codex task completed|fx-ok01.wav"
 unset CODEX_AGENTS_DIR
+# Grok: chat_history.jsonl next to transcriptPath, camelCase backgroundTasks.
+gk() { mkdir -p "$d/grok-$1"; printf '%s\n' '{"type":"user","prompt_index":0,"content":[{"type":"text","text":"hi"}]}' "$2" \
+  '{"type":"assistant","content":"ok"}' >"$d/grok-$1/chat_history.jsonl"; : >"$d/grok-$1/updates.jsonl"; }
+gk human '{"type":"user","prompt_index":1,"content":[{"type":"text","text":"fix it"}]}'
+gk task '{"type":"user","prompt_index":1,"synthetic_reason":"task_completed","content":[{"type":"text","text":"Background task \"x\" completed (exit code: 1)."}]}'
+gk sub '{"type":"user","prompt_index":1,"synthetic_reason":"subagent_completed","content":[{"type":"text","text":"<system-reminder>\nBackground subagent \"s1\" (explore: \"find x\") completed successfully.\nfailed tests: none"}]}'
+gk subfail '{"type":"user","prompt_index":1,"synthetic_reason":"subagent_completed","content":[{"type":"text","text":"Background subagent \"s2\" (general: \"fix\") completed with failure.\n"}]}'
+gk sig '{"type":"user","prompt_index":1,"synthetic_reason":"task_completed","content":[{"type":"text","text":"Background task \"t\" completed (terminated by signal SIGTERM).\n"}]}'
+gk mon '{"type":"user","prompt_index":1,"synthetic_reason":"notification_drain","content":[{"type":"text","text":"2 monitor events"}]}'
+gk drain '{"type":"user","prompt_index":1,"synthetic_reason":"notification_drain","content":[{"type":"text","text":"<system-reminder>\nBackground task \"t\" completed (exit code: 0).\n"}]}'
+gk gsum '{"type":"user","prompt_index":1,"synthetic_reason":"goal_summary","content":[{"type":"text","text":"summarize progress"}]}'
+gk cron '{"type":"user","prompt_index":1,"synthetic_reason":"scheduler_fired","content":[{"type":"text","text":"check"}]}'
+gk goal '{"type":"user","prompt_index":1,"synthetic_reason":"goal_classifier_nudge","content":[{"type":"text","text":"keep going"}]}'
+G() { printf '{"hook_event_name":"Stop","reason":"end_turn","cwd":"/x/proj","transcriptPath":"%s","backgroundTasks":%s}' "$d/grok-$1/updates.jsonl" "${2:-[]}"; }
+GB='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
+t "grok done"             grok "$(G human)"       "done|Grok [proj]|Grok task completed|fx-ok01.wav"
+t "grok replied, busy"    grok "$(G human "$GB")" "progress|Grok [proj]|Grok replied · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok task failed, busy" grok "$(G task "$GB")" "progress|Grok [proj]|Grok background command failed · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok subagent, none"   grok "$(G sub)"         "done|Grok [proj]|Grok task completed|fx-ok01.wav"
+t "grok subagent ok, busy" grok "$(G sub "$GB")"  "progress|Grok [proj]|Grok subagent finished · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok subagent failed"  grok "$(G subfail "$GB")" "progress|Grok [proj]|Grok subagent failed · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok shell killed"     grok "$(G sig "$GB")"   "progress|Grok [proj]|Grok background command stopped · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok monitor"          grok "$(G mon)"         "quiet|Grok [proj]|Grok monitor event|"
+t "grok loop"             grok "$(G cron)"        "quiet|Grok [proj]|Grok scheduled check|"
+t "grok drain commands"   grok "$(G drain "$GB")" "progress|Grok [proj]|Grok background command finished · 1 shell, 1 subagent still running|Tink.aiff"
+t "grok goal summary"     grok "$(G gsum)"        "quiet|Grok [proj]|Grok goal step|"
+t "grok goal step"        grok "$(G goal)"        "quiet|Grok [proj]|Grok goal step|"
+t "grok failure"          grok '{"hook_event_name":"StopFailure","cwd":"/x/proj"}' "failed|Grok [proj]|Grok task failed|Basso.aiff"
 # OMP: omp/test.ts drives the extension with a fake host.
 BUN=$(command -v bun || echo "$HOME/.bun/bin/bun")
 if [ -x "$BUN" ]; then
