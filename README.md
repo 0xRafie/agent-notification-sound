@@ -8,7 +8,13 @@ One sound and macOS notification setup for four coding-agent CLIs. Each one says
 | The turn dies on an API error | `<Tool> [<folder>]` | `<Tool> task failed` | Basso |
 | The agent asks you a question | `<Tool> [<folder>]` | `<Tool> asks a question` | Submarine |
 
-Claude Code adds classes so a ping from background work doesn't sound like the main agent finishing. The hook reads `turnOrigin` from the transcript (what started the turn) and `background_tasks` from the `Stop` input:
+Claude Code, Droid and OMP add classes so a ping from background work doesn't sound like the main agent finishing. Each one looks at what started the turn and what is still running:
+
+- Claude Code: `turnOrigin` in the transcript and `background_tasks` in the `Stop` input.
+- Droid: the last user message in the transcript (`execute-completion:` = background command, "Background task completed." = subagent, text equal to one of the session's cron prompts in `~/.factory/crons` = scheduled), plus `background-processes.json` and `task-invocations.json` for what still runs.
+- OMP: an `async-result` message (a background job finished), the same prompt twice in a row (a `/loop` run), and `ctx.getAsyncJobSnapshot()` for what still runs.
+
+Example messages use Claude; Droid and OMP say the same with their own name (OMP says `OMP loop run` for loop turns and has no monitor events).
 
 | Claude turn | Message | Sound |
 |---|---|---|
@@ -20,7 +26,7 @@ Claude Code adds classes so a ping from background work doesn't sound like the m
 
 The banner is our own glass panel (`overlay/Overlay.swift`, built by `install.sh` into `bin/notify-overlay`), not a Notification Center banner: macOS banners can't be colored. It shows the agent's icon (the official Clawd vector in `icons/claude.png` for Claude Code, Factory.app for Droid, Grok Bot.app for Grok, `icons/omp.png` for OMP, the omp.sh favicon) and a class color that fades from the icon side to clear (green done, orange still running, blue question, red failed, grey cron/monitor); stacks when several arrive and never takes focus. Like a macOS banner it fades after 5 s (3.5 s for grey), stays while the pointer is on it (with a close button), and closes on click or a swipe to the right. OMP uses the same banner and per-class sounds. Without `swiftc` everything falls back to the plain macOS banner.
 
-Monitors don't count as running work. Every notification is logged to `~/Library/Logs/agent-notify.log`, so you can check what an earlier ping was. `./test.sh` runs every class in dry-run mode (`NOTIFY_DRY_RUN=1`).
+Monitors don't count as running work. Every notification is logged to `~/Library/Logs/agent-notify.log`, so you can check what an earlier ping was. `./test.sh` runs every class for all tools in dry-run mode (`NOTIFY_DRY_RUN=1`); the OMP part needs `bun`.
 
 | Tool | Wired as | Completed | Failed | Question |
 |---|---|---|---|---|

@@ -6,8 +6,8 @@
 #   done      "<Tool> task completed"                     fx-ok01.wav
 #   failed    "<Tool> task failed"                        Basso
 #   question  "<Tool> asks a question"                    Submarine
-#   progress  "Claude replied · 2 subagents still running" Tink   (Claude only)
-#             "Claude subagent finished · 1 shell still running"
+#   progress  "Claude replied · 2 subagents still running" Tink   (Claude, Droid)
+#             "Droid subagent finished · 1 shell still running"
 #   quiet     "Claude scheduled check" / "Claude monitor event"   no sound
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
@@ -27,19 +27,21 @@ done_sound="$HOME/.factory/sounds/fx-ok01.wav"
 [ -f "$done_sound" ] || done_sound=/System/Library/Sounds/Glass.aiff
 class=done sound=$done_sound
 
-# Claude only: what started this turn, and which background work is still running.
-# A turn can be started by you (human), by a finished background task
-# (task_notification), or by a cron/loop job (scheduled); see "turnOrigin" in the
-# transcript. Monitors are long-lived watchers, not work, so they don't count.
+# What started this turn and which background work is still running. Each
+# reader sets: origin = human | scheduled | monitor | finished (a background
+# task ended), what/verb for a finished task, and running ("2 subagents, 1 shell").
+
+# Claude: "turnOrigin" in the transcript (human, task_notification, scheduled)
+# and background_tasks in the Stop input. Monitors are long-lived watchers, not
+# work, so they don't count.
 claude_stop() {
-  local transcript origin_line origin summary running
+  local transcript origin_line summary
   transcript=$(field .transcript_path)
   # Transcripts reach 150+ MB; the turn's first line is almost always in the last 8 MB.
   if [ -f "$transcript" ]; then
     origin_line=$(tail -c 8000000 "$transcript" | /usr/bin/grep -a '"turnOrigin"' | tail -n 1)
     [ -n "$origin_line" ] || origin_line=$(/usr/bin/grep -a '"turnOrigin"' "$transcript" | tail -n 1)
   fi
-  origin=$(printf '%s' "$origin_line" | /usr/bin/jq -r '.turnOrigin // ""' 2>/dev/null)
   running=$(printf '%s' "$input" | /usr/bin/jq -r '
     [(.background_tasks // [])[]
       | select(.status == "running" or .status == "pending")
@@ -47,34 +49,77 @@ claude_stop() {
     | group_by(.type)
     | map("\(length) \(.[0].type)\(if length > 1 then "s" else "" end)")
     | join(", ")' 2>/dev/null)
-
-  case "$origin" in
-    scheduled) class=quiet message="$name scheduled check" ;;
+  case "$(printf '%s' "$origin_line" | /usr/bin/jq -r '.turnOrigin // ""' 2>/dev/null)" in
+    scheduled) origin=scheduled ;;
     task_notification)
       summary=$(printf '%s' "$origin_line" | /usr/bin/jq -r '
         .message.content | if type == "array" then map(.text? // "") | join(" ") else . end
         | capture("<summary>(?<s>[^<]*)</summary>").s // ""' 2>/dev/null)
+      origin=finished
       case "$summary" in
-        Monitor*) class=quiet message="$name monitor event" ;;
-        *) local what=subagent verb=finished
-           case "$summary" in
-             "Background command"* | "Background shell"*) what="background command" ;;
-             "Dynamic workflow"*) what=workflow ;;
-           esac
-           case "$summary" in *" failed"*) verb=failed ;; esac
-           [ -n "$running" ] && class=progress message="$name $what $verb · $running still running" ;;
-      esac ;;
-    *) [ -n "$running" ] && class=progress message="$name replied · $running still running" ;;
+        Monitor*) origin=monitor ;;
+        "Background command"* | "Background shell"*) what="background command" ;;
+        "Dynamic workflow"*) what=workflow ;;
+      esac
+      case "$summary" in *" failed"*) verb=failed ;; esac ;;
   esac
 }
 
-message=
+# Droid: the last real user message in the transcript. Finished background
+# work arrives as "execute-completion:…" (command) or "Background task
+# completed." (subagent); a Loop/cron prompt is a plain message whose text is
+# the prompt of one of this session's crons. Still running: this session's
+# entries in background-processes.json (pid alive) and running background
+# subagents in task-invocations.json.
+droid_stop() {
+  local fdir=${FACTORY_DIR:-$HOME/.factory} sid transcript last id text f
+  sid=$(field .session_id) transcript=$(field .transcript_path)
+  if [ -f "$transcript" ]; then
+    last=$(tail -c 8000000 "$transcript" | /usr/bin/jq -c -R 'fromjson? | select(.type == "message" and .message.role == "user")
+      | (.message.content | if type == "array" then . else [{type: "text", text: .}] end) as $c
+      | select(any($c[]; .type == "tool_result") | not)
+      | [$c[] | select(.type == "text") | .text | select(startswith("<system-reminder>") | not)] as $t
+      | select(($t | length) > 0)
+      | select(.id | test("^(context-|__internal__|todo-|mcp-auth|tool-catalog)") | not)
+      | {id, text: $t[-1]}' 2>/dev/null | tail -n 1)
+    id=$(printf '%s' "$last" | /usr/bin/jq -r '.id // ""' 2>/dev/null)
+    text=$(printf '%s' "$last" | /usr/bin/jq -r '.text // ""' 2>/dev/null)
+  fi
+  case "$id:$text" in
+    execute-completion:*)
+      origin=finished what="background command"
+      case "$text" in *"exit_status: 0"*) ;; *exit_status:*) verb=failed ;; esac ;;
+    *:"Background task completed."*)
+      origin=finished
+      case "$text" in *"reason: completed"*) ;; *reason:*) verb=failed ;; esac ;;
+    *)
+      for f in "$fdir"/crons/*/"$sid"/*.json; do
+        [ -f "$f" ] && [ -n "$text" ] &&
+          [ "$(/usr/bin/jq -r '.payload.prompt // ""' "$f" 2>/dev/null)" = "$text" ] && { origin=scheduled; break; }
+      done ;;
+  esac
+  local shells=0 agents pid
+  for pid in $(/usr/bin/jq -r --arg s "$sid" '.processes[]? | select(.sessionId == $s) | .pid' "$fdir/background-processes.json" 2>/dev/null); do
+    kill -0 "$pid" 2>/dev/null && shells=$((shells + 1))
+  done
+  agents=$(/usr/bin/jq -r --arg s "$sid" '[.invocations[]? | select(.parentSessionId == $s and .status == "running")] | length' "$fdir/task-invocations.json" 2>/dev/null)
+  running=$( { [ "${agents:-0}" -gt 0 ] && printf '%s subagent%s\n' "$agents" "$([ "$agents" -gt 1 ] && echo s)"
+               [ "$shells" -gt 0 ] && printf '%s shell%s\n' "$shells" "$([ "$shells" -gt 1 ] && echo s)"; } | paste -sd, - | sed 's/,/, /g')
+}
+
+message= origin=human what=subagent verb=finished running=
 case "$(field .hook_event_name)" in
   Stop)
     # Grok also fires Stop when the session ends; only a finished turn counts.
     if [ "$tool" = grok ] && [ "$(field .reason)" != end_turn ]; then exit 0; fi
-    [ "$tool" = claude ] && claude_stop
-    # A task_notification turn with nothing left running is the real finish.
+    case "$tool" in claude) claude_stop ;; droid) droid_stop ;; esac
+    case "$origin" in
+      scheduled) class=quiet message="$name scheduled check" ;;
+      monitor) class=quiet message="$name monitor event" ;;
+      finished) [ -n "$running" ] && class=progress message="$name $what $verb · $running still running" ;;
+      *) [ -n "$running" ] && class=progress message="$name replied · $running still running" ;;
+    esac
+    # A finished-task turn with nothing left running is the real finish.
     [ -n "$message" ] || message="$name task completed" ;;
   StopFailure) # Droid has no failure event
     class=failed sound=/System/Library/Sounds/Basso.aiff message="$name task failed" ;;

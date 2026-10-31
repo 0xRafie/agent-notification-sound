@@ -3,7 +3,7 @@
  *
  * Plays a sound and sends a desktop notification when OMP finishes, fails, or
  * asks you a question, with the same titles, messages, sounds and glass banner
- * (../bin/notify-overlay, green/red/blue by class) as ../notify.sh uses for
+ * (../bin/notify-overlay, tinted by class) as ../notify.sh uses for
  * Claude Code, Droid and Grok. Without the banner binary it falls back to
  * osascript; other platforms can use a custom sound command and in-app
  * OMP notifications.
@@ -40,6 +40,8 @@ type CommandContext = {
   cwd?: string;
   settings?: Record<string, unknown>;
   ui?: { notify?: (message: string, type?: NotifyLevel) => void };
+  /** Background jobs (`bash` with async, `task` subagents, `eval`) of this session. */
+  getAsyncJobSnapshot?: () => { running?: Array<{ type?: string; status?: string }> } | null;
 };
 
 type EventContext = CommandContext;
@@ -235,7 +237,7 @@ function playSound(config: NotificationSoundConfig, reason: string, cls: NotifyC
   if (now - lastPlayedAt < config.cooldownMs) return { played: false, reason: "cooldown" };
 
   const command = resolveSoundCommand(config, cls);
-  if (!command) return { played: false, reason: "unsupported-platform-or-missing-sound" };
+  if (!command) return { played: false, reason: cls === "quiet" ? "disabled" : "unsupported-platform-or-missing-sound" };
 
   const started = spawnDetached(command.command, command.args);
   if (!started.ok) return { played: false, reason: started.reason };
@@ -282,12 +284,13 @@ function spawnDetached(command: string, args: string[]): { ok: true } | { ok: fa
   }
 }
 
-type NotifyClass = "done" | "failed" | "question";
+type NotifyClass = "done" | "failed" | "question" | "progress" | "quiet";
 
 // Same per-class sounds as notify.sh; a custom `sound` in config.yml wins for "done".
-const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done">, string> = {
+const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = {
   failed: "/System/Library/Sounds/Basso.aiff",
   question: "/System/Library/Sounds/Submarine.aiff",
+  progress: "/System/Library/Sounds/Tink.aiff",
 };
 
 // The extension folder is a symlink into the agent-notification-sound repo.
@@ -304,7 +307,7 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
     return { command: config.command.command, args: config.command.args ?? [] };
   }
 
-  if (platform() !== "darwin") return null;
+  if (platform() !== "darwin" || cls === "quiet") return null;
   const sound = cls === "done" ? config.sound : CLASS_SOUNDS[cls];
   if (!existsSync(sound)) return null;
 
@@ -340,11 +343,60 @@ function quoteAppleScript(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`;
 }
 
+type HostMessage = {
+  role?: string;
+  stopReason?: string;
+  customType?: string;
+  content?: string | Array<{ type?: string; text?: string }>;
+  details?: { jobs?: Array<{ type?: string; status?: string }> };
+};
+
 type HostEvent = {
   willContinue?: boolean;
   toolName?: string;
-  messages?: Array<{ role?: string; stopReason?: string }>;
+  messages?: HostMessage[];
 };
+
+const JOB_NAMES: Record<string, string> = { bash: "shell", task: "subagent", eval: "eval job" };
+
+function messageText(m: HostMessage | undefined): string {
+  if (!m) return "";
+  if (typeof m.content === "string") return m.content;
+  return (m.content ?? []).map(part => (part.type === "text" ? part.text ?? "" : "")).join("");
+}
+
+/** "2 subagents, 1 shell" for this session's still-running background jobs. */
+function runningJobs(ctx: CommandContext | undefined): string {
+  const counts = new Map<string, number>();
+  for (const job of ctx?.getAsyncJobSnapshot?.()?.running ?? []) {
+    if (job.status && job.status !== "running") continue;
+    const name = JOB_NAMES[job.type ?? ""] ?? "job";
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts].map(([name, n]) => `${n} ${name}${n > 1 ? "s" : ""}`).join(", ");
+}
+
+/**
+ * Same classes as the Claude Code hook. What started this run: a background job
+ * finishing (an `async-result` message), a /loop re-submit (the same prompt as
+ * the previous one), or you. Work still running turns "completed" into progress.
+ */
+function classifyRun(messages: HostMessage[], ctx: CommandContext | undefined): { cls: NotifyClass; text?: string } {
+  const starts = messages.filter(m => m.role === "user" || (m.role === "custom" && m.customType === "async-result"));
+  const start = starts.at(-1);
+  const running = runningJobs(ctx);
+  if (start?.role === "custom") {
+    const jobs = start.details?.jobs ?? [];
+    const what = jobs[0]?.type === "bash" ? "background command" : jobs[0]?.type === "eval" ? "eval job" : "subagent";
+    const verb = jobs.some(job => job.status === "failed") ? "failed" : "finished";
+    return running ? { cls: "progress", text: `OMP ${what} ${verb} · ${running} still running` } : { cls: "done" };
+  }
+  const users = starts.filter(m => m.role === "user");
+  if (users.length >= 2 && messageText(users.at(-1)) !== "" && messageText(users.at(-1)) === messageText(users.at(-2))) {
+    return { cls: "quiet", text: "OMP loop run" };
+  }
+  return running ? { cls: "progress", text: `OMP replied · ${running} still running` } : { cls: "done" };
+}
 
 function handleEvent(eventName: string, ctx: CommandContext | undefined, event?: HostEvent): void {
   // Subagents run their own session with the same extension bound to it, and
@@ -378,6 +430,10 @@ function handleEvent(eventName: string, ctx: CommandContext | undefined, event?:
     if (last?.stopReason === "error") {
       message = config.desktopNotification.failedMessage;
       cls = "failed";
+    } else {
+      const run = classifyRun(event?.messages ?? [], ctx);
+      cls = run.cls;
+      if (run.text) message = run.text;
     }
   }
 
@@ -385,6 +441,13 @@ function handleEvent(eventName: string, ctx: CommandContext | undefined, event?:
   const project = basename(ctx?.cwd ?? process.cwd()) || "?";
   config.desktopNotification.title = config.desktopNotification.title.replaceAll("{project}", project);
   config.desktopNotification.message = message.replaceAll("{project}", project);
+
+  // NOTIFY_DRY_RUN=1 prints what would be shown instead (used by ../test.sh).
+  if (process.env.NOTIFY_DRY_RUN) {
+    const sound = resolveSoundCommand(config, cls)?.args.at(-1);
+    console.log(`${cls}|${config.desktopNotification.title}|${config.desktopNotification.message}|${sound ? basename(sound) : ""}`);
+    return;
+  }
 
   const notificationResult = sendDesktopNotification(config, eventName, cls);
   if (!notificationResult.sent && notificationResult.reason && notificationResult.reason !== "cooldown" && notificationResult.reason !== "disabled" && notificationResult.reason !== "desktop-notification-disabled") {
