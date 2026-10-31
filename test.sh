@@ -58,6 +58,30 @@ t "droid human, busy"     droid "$(D dhuman)" "progress|Droid [proj]|Droid repli
 t "droid exec, busy"      droid "$(D dexec)"  "progress|Droid [proj]|Droid background command finished · 2 subagents, 1 shell still running|Tink.aiff"
 t "droid task failed"     droid "$(D dtask)"  "progress|Droid [proj]|Droid subagent failed · 2 subagents, 1 shell still running|Tink.aiff"
 kill $SLEEPER 2>/dev/null; unset FACTORY_DIR
+# Codex: rollout fixtures (first line = originator) and a fake subagent dir.
+export CODEX_AGENTS_DIR="$d/codex-agents"
+cx() { # name originator goal-status user-turn?
+  { printf '{"type":"session_meta","payload":{"originator":"%s"}}\n' "$2"
+    [ -n "$3" ] && printf '{"type":"event_msg","payload":{"type":"thread_goal_updated","goal":{"status":"%s"}}}\n' "$3"
+    [ "$4" = yes ] && printf '{"type":"event_msg","payload":{"type":"item_completed","turn_id":"T1","item":{"type":"UserMessage"}}}\n'
+    printf '{"type":"event_msg","payload":{"type":"task_started","turn_id":"T1"}}\n'; } >"$d/$1.jsonl"; }
+cx ctui codex-tui "" yes; cx cexec codex_exec "" yes; cx cdesk "Codex Desktop" "" yes; cx cgoal codex-tui active no; cx cgoaldone codex-tui complete no
+C() { printf '{"hook_event_name":"%s","cwd":"/x/proj","session_id":"S1","turn_id":"T1","agent_id":"%s","tool_name":"%s","transcript_path":"%s"}' "$1" "${3:-}" "${4:-}" "$d/$2.jsonl"; }
+t "codex done"            codex "$(C Stop ctui)"      "done|Codex [proj]|Codex task completed|fx-ok01.wav"
+t "codex exec silent"     codex "$(C Stop cexec)"     ""
+t "codex desktop silent"  codex "$(C Stop cdesk)"     ""
+t "codex goal step"       codex "$(C Stop cgoal)"     "quiet|Codex [proj]|Codex goal step|"
+t "codex goal finished"   codex "$(C Stop cgoaldone)" "done|Codex [proj]|Codex task completed|fx-ok01.wav"
+t "codex question"        codex "$(C PreToolUse ctui "" request_user_input)" "question|Codex [proj]|Codex asks a question|Submarine.aiff"
+t "codex other tool"      codex "$(C PreToolUse ctui "" Bash)" ""
+t "codex subagent start"  codex "$(C SubagentStart ctui A1)" ""
+printf '%s' "$(C SubagentStart ctui A2)" | NOTIFY_DRY_RUN=1 bash "$N" codex
+t "codex 2 running"       codex "$(C Stop ctui)"      "progress|Codex [proj]|Codex replied · 2 subagents still running|Tink.aiff"
+t "codex subagent stop"   codex "$(C SubagentStop ctui A1)" ""
+t "codex 1 running"       codex "$(C Stop ctui)"      "progress|Codex [proj]|Codex replied · 1 subagent still running|Tink.aiff"
+printf '%s' "$(C SubagentStop ctui A2)" | NOTIFY_DRY_RUN=1 bash "$N" codex
+t "codex none running"    codex "$(C Stop ctui)"      "done|Codex [proj]|Codex task completed|fx-ok01.wav"
+unset CODEX_AGENTS_DIR
 # OMP: omp/test.ts drives the extension with a fake host.
 BUN=$(command -v bun || echo "$HOME/.bun/bin/bun")
 if [ -x "$BUN" ]; then

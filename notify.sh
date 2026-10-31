@@ -1,14 +1,14 @@
 #!/bin/bash
-# Notification hook for Claude Code, Factory Droid and Grok (OMP uses omp/index.ts).
-# Hook command: notify.sh claude|droid|grok   (reads the hook event JSON on stdin)
+# Notification hook for Claude Code, Factory Droid, Grok and Codex (OMP uses omp/index.ts).
+# Hook command: notify.sh claude|droid|grok|codex   (reads the hook event JSON on stdin)
 # Title "<Tool> [<folder>]" on a glass banner tinted by class (green, orange,
 # blue, red, grey). Each class has its own message and sound:
 #   done      "<Tool> task completed"                     fx-ok01.wav
 #   failed    "<Tool> task failed"                        Basso
 #   question  "<Tool> asks a question"                    Submarine
-#   progress  "Claude replied · 2 subagents still running" Tink   (Claude, Droid)
+#   progress  "Claude replied · 2 subagents still running" Tink   (Claude, Droid, Codex)
 #             "Droid subagent finished · 1 shell still running"
-#   quiet     "Claude scheduled check" / "Claude monitor event"   no sound
+#   quiet     "Claude scheduled check" / "Claude monitor event" / "Codex goal step"   no sound
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
@@ -17,11 +17,31 @@ case "$tool" in
   claude) name=Claude ask=AskUserQuestion ;;
   droid) name=Droid ask=AskUser ;;
   grok) name=Grok ask=ask_user_question ;;
-  *) echo "usage: notify.sh claude|droid|grok" >&2; exit 0 ;;
+  codex) name=Codex ask=request_user_input ;;
+  *) echo "usage: notify.sh claude|droid|grok|codex" >&2; exit 0 ;;
 esac
 
 input=$(cat)
 field() { printf '%s' "$input" | /usr/bin/jq -r "($1) // \"\"" 2>/dev/null; }
+
+if [ "$tool" = codex ]; then
+  # Only the terminal app: `codex exec` runs scripted (Claude uses it as a
+  # reviewer) and the ChatGPT/Codex desktop app shows its own notifications.
+  transcript=$(field .transcript_path)
+  if [ -f "$transcript" ]; then
+    case "$(head -n 1 "$transcript" | /usr/bin/jq -r '.payload.originator // ""' 2>/dev/null)" in
+      "" | codex-tui | codex_cli_rs) ;;
+      *) exit 0 ;;
+    esac
+  fi
+  # Codex hooks don't list running subagents, so keep one file per running
+  # subagent (SubagentStart adds it, SubagentStop removes it). Silent events.
+  agents_dir="${CODEX_AGENTS_DIR:-$HOME/Library/Caches/agent-notify/codex}/$(field .session_id)"
+  case "$(field .hook_event_name)" in
+    SubagentStart) mkdir -p "$agents_dir" && touch "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
+    SubagentStop) rm -f "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
+  esac
+fi
 
 done_sound="$HOME/.factory/sounds/fx-ok01.wav"
 [ -f "$done_sound" ] || done_sound=/System/Library/Sounds/Glass.aiff
@@ -107,14 +127,33 @@ droid_stop() {
                [ "$shells" -gt 0 ] && printf '%s shell%s\n' "$shells" "$([ "$shells" -gt 1 ] && echo s)"; } | paste -sd, - | sed 's/,/, /g')
 }
 
+# Codex: a turn with no UserMessage of its own was started by Codex itself;
+# while a /goal is active that is a goal step. Running subagents come from the
+# files kept by SubagentStart/SubagentStop (older than 12 h count as stale).
+codex_stop() {
+  local tid transcript n
+  tid=$(field .turn_id) transcript=$(field .transcript_path)
+  if [ -f "$transcript" ] && [ -n "$tid" ] &&
+     ! /usr/bin/grep -a "\"turn_id\":\"$tid\"" "$transcript" | /usr/bin/grep -aq '"type":"UserMessage"' &&
+     [ "$(/usr/bin/grep -a '"thread_goal_updated"' "$transcript" | tail -n 1 | /usr/bin/jq -r '.payload.goal.status // ""' 2>/dev/null)" = active ]; then
+    origin=goal
+  fi
+  if [ -d "$agents_dir" ]; then
+    find "$agents_dir" -type f -mmin +720 -delete 2>/dev/null
+    n=$(find "$agents_dir" -type f | wc -l | tr -d ' ')
+    [ "$n" -gt 0 ] && running="$n subagent$([ "$n" -gt 1 ] && echo s)"
+  fi
+}
+
 message= origin=human what=subagent verb=finished running=
 case "$(field .hook_event_name)" in
   Stop)
     # Grok also fires Stop when the session ends; only a finished turn counts.
     if [ "$tool" = grok ] && [ "$(field .reason)" != end_turn ]; then exit 0; fi
-    case "$tool" in claude) claude_stop ;; droid) droid_stop ;; esac
+    case "$tool" in claude) claude_stop ;; droid) droid_stop ;; codex) codex_stop ;; esac
     case "$origin" in
       scheduled) class=quiet message="$name scheduled check" ;;
+      goal) class=quiet message="$name goal step" ;;
       monitor) class=quiet message="$name monitor event" ;;
       finished) [ -n "$running" ] && class=progress message="$name $what $verb · $running still running" ;;
       *) [ -n "$running" ] && class=progress message="$name replied · $running still running" ;;
@@ -165,6 +204,7 @@ if [ -x "$overlay" ]; then
   case "$tool" in
     droid) icon=/Applications/Factory.app ;;
     grok) icon="/Applications/Grok Bot.app" ;;
+    codex) icon=codex ;;
     *) icon=claude ;;
   esac
   slot=$(pgrep -x notify-overlay | wc -l | tr -d ' ')

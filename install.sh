@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wires notify.sh into Claude Code, Droid and Grok, and omp/ into Oh My Pi.
+# Wires notify.sh into Claude Code, Droid, Grok and Codex, and omp/ into Oh My Pi.
 # Safe to re-run: older notification hooks are replaced, other hooks are kept.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +43,10 @@ if [ -d ~/.grok ]; then
   grep -l 'notification-sound\.sh' ~/.grok/hooks/*.json | grep -v '/agent-notification-sound\.json$' |
     sed 's/^/warning: remove this old Grok hook or it chimes twice: /' || true
 fi
+if [ -d ~/.codex ]; then
+  # New or changed hooks stay off until you trust them: open /hooks in Codex once.
+  hook ~/.codex/hooks.json '["hooks"]' codex request_user_input '["Stop","PreToolUse","SubagentStart","SubagentStop"]'
+fi
 if [ -d ~/.omp ]; then
   ext=~/.omp/agent/extensions/notification-sound
   mkdir -p "$(dirname "$ext")"
@@ -53,4 +57,4 @@ if [ -d ~/.omp ]; then
     echo "linked: $ext"
   fi
 fi
-echo "Done. Restart running agents to load it (in Claude Code, opening /hooks once is enough)."
+echo "Done. Restart running agents to load it (in Claude Code, opening /hooks once is enough; in Codex, open /hooks and trust the new hooks)."
