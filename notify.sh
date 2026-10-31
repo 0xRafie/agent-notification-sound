@@ -1,13 +1,14 @@
 #!/bin/bash
 # Notification hook for Claude Code, Factory Droid and Grok (OMP uses omp/index.ts).
 # Hook command: notify.sh claude|droid|grok   (reads the hook event JSON on stdin)
-# Title "<Tool> [<folder>]". Each class has its own message and sound:
+# Title "<Tool> [<folder>]" on a glass banner tinted by class (green, orange,
+# blue, red, grey). Each class has its own message and sound:
 #   done      "<Tool> task completed"                     fx-ok01.wav
 #   failed    "<Tool> task failed"                        Basso
 #   question  "<Tool> asks a question"                    Submarine
 #   progress  "Claude replied · 2 subagents still running" Tink   (Claude only)
 #             "Claude subagent finished · 1 shell still running"
-#   quiet     "Claude scheduled check" / "Claude monitor event"   banner, no sound
+#   quiet     "Claude scheduled check" / "Claude monitor event"   no sound
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
@@ -111,13 +112,25 @@ log="$HOME/Library/Logs/agent-notify.log"
 printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$log" 2>/dev/null
 [ "$(wc -l <"$log" 2>/dev/null)" -gt 2000 ] 2>/dev/null && { tail -n 1000 "$log" >"$log.tmp" && mv "$log.tmp" "$log"; }
 
-# Title and message go in as argv, never into the AppleScript source: a stray
-# quote or backslash would break the script and the notification would vanish.
-/usr/bin/osascript - "$message" "$title" >/dev/null 2>&1 <<'APPLESCRIPT'
+# Glass banner tinted by class (bin/notify-overlay, built by install.sh); it stays
+# up a few seconds, so it runs detached. Without it, the plain macOS banner.
+# Title and message go in as argv, never into script source.
+overlay="$(dirname "$0")/bin/notify-overlay"
+if [ -x "$overlay" ]; then
+  case "$tool" in
+    droid) icon=/Applications/Factory.app ;;
+    grok) icon="/Applications/Grok Bot.app" ;;
+    *) icon=claude ;;
+  esac
+  slot=$(pgrep -x notify-overlay | wc -l | tr -d ' ')
+  nohup "$overlay" "$class" "$title" "$message" "$icon" "$slot" >/dev/null 2>&1 &
+else
+  /usr/bin/osascript - "$message" "$title" >/dev/null 2>&1 <<'APPLESCRIPT'
 on run argv
   display notification (item 1 of argv) with title (item 2 of argv)
 end run
 APPLESCRIPT
+fi
 [ -n "$sound" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
 
 [ "$tool" = claude ] && printf '{"suppressOutput":true}'

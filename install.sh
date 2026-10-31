@@ -4,6 +4,14 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")" && pwd)"
 
+# Glass banner (overlay/Overlay.swift). Without it notify.sh falls back to the plain macOS banner.
+if command -v swiftc >/dev/null; then
+  mkdir -p "$repo/bin"
+  swiftc -O "$repo/overlay/Overlay.swift" -o "$repo/bin/notify-overlay" && echo "built: $repo/bin/notify-overlay"
+else
+  echo "warning: swiftc not found (xcode-select --install); using the plain macOS banner"
+fi
+
 hook() { # <json file> <jq path to the hooks object> <tool> <ask tool> <events json>
   local file=$1 tmp
   tmp=$(mktemp)
