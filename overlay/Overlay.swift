@@ -59,7 +59,11 @@ func icon(size: CGFloat) -> NSImage {
 }
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+// Launch as .prohibited so macOS doesn't activate the banner and pull keyboard
+// focus away from your app (.accessory at launch did, for ~3 s). Switch to
+// .accessory once running: that doesn't activate it, and hover events need it.
+app.setActivationPolicy(.prohibited)
+DispatchQueue.main.async { app.setActivationPolicy(.accessory) }
 
 let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22
 let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
