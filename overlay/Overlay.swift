@@ -1,5 +1,7 @@
 // Glass notification banner with a class-colored tint, drawn top-right.
-// It never takes focus, ignores the mouse and fades out after a few seconds.
+// Behaves like a macOS banner: never takes focus, fades out after a few seconds,
+// stays while the pointer is over it (with a close button), and closes on click
+// or a two-finger swipe to the right.
 // Usage: notify-overlay <class> <title> <message> [icon] [slot]
 //   class  done | progress | question | failed | quiet
 //   icon   claude (icons/claude.png), or a path to an .app or image file
@@ -61,15 +63,98 @@ app.setActivationPolicy(.accessory)
 
 let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22
 let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-let frame = NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - slot * (h + 8), width: w, height: h)
+let home = NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - slot * (h + 8), width: w, height: h)
 
-let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+let panel = NSPanel(contentRect: home, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 panel.level = .statusBar
 panel.isOpaque = false
 panel.backgroundColor = .clear
 panel.hasShadow = true
-panel.ignoresMouseEvents = true
+panel.becomesKeyOnlyIfNeeded = true
+panel.hidesOnDeactivate = false
 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
+/// Takes every click, hover and swipe on the banner; the icon and labels don't.
+final class BannerView: NSView {
+  let close = NSButton()
+  var hideWork: DispatchWorkItem?
+  var swipe: CGFloat = 0
+  var closing = false
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    close.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")
+    close.isBordered = false
+    close.imageScaling = .scaleProportionallyUpOrDown
+    close.contentTintColor = .secondaryLabelColor
+    close.frame = NSRect(x: 4, y: frame.height - 22, width: 18, height: 18)
+    close.target = self
+    close.action = #selector(closeClicked)
+    close.isHidden = true
+  }
+  required init?(coder: NSCoder) { fatalError() }
+
+  override func updateTrackingAreas() {
+    trackingAreas.forEach(removeTrackingArea)
+    addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+  }
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let p = convert(point, from: superview)
+    if !close.isHidden, close.frame.contains(p) { return close }
+    return bounds.contains(p) ? self : nil
+  }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  func scheduleHide(after s: Double) {
+    hideWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in self?.dismiss(slide: false) }
+    hideWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: work)
+  }
+  override func mouseEntered(with event: NSEvent) { hideWork?.cancel(); close.isHidden = false }
+  override func mouseExited(with event: NSEvent) { close.isHidden = true; scheduleHide(after: 2.5) }
+  override func mouseUp(with event: NSEvent) { dismiss(slide: false) }
+  @objc func closeClicked() { dismiss(slide: false) }
+
+  // Trackpad: the banner follows a two-finger swipe to the right; far enough
+  // closes it, otherwise it snaps back. Mice without gesture phases: enough
+  // rightward scrolling within half a second closes it.
+  var lastWheel = Date.distantPast
+  override func scrollWheel(with event: NSEvent) {
+    guard !closing else { return }
+    var dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+    if event.phase.isEmpty && event.momentumPhase.isEmpty {
+      if !event.hasPreciseScrollingDeltas { dx *= 10 }
+      if Date().timeIntervalSince(lastWheel) > 0.5 { swipe = 0 }
+      lastWheel = Date()
+      swipe = max(0, swipe + dx)
+      if swipe > 50 { dismiss(slide: true) }
+      return
+    }
+    guard event.momentumPhase.isEmpty else { return }
+    if event.phase.contains(.began) { swipe = 0 }
+    swipe = max(0, swipe + dx)
+    if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+      if swipe > 50 { dismiss(slide: true) } else {
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.2; window?.animator().setFrame(home, display: true) }
+      }
+      swipe = 0
+    } else {
+      window?.setFrameOrigin(NSPoint(x: home.minX + swipe, y: home.minY))
+    }
+  }
+
+  func dismiss(slide: Bool) {
+    guard !closing else { return }
+    closing = true
+    hideWork?.cancel()
+    NSAnimationContext.runAnimationGroup({ ctx in
+      ctx.duration = slide ? 0.25 : 0.4
+      window?.animator().alphaValue = 0
+      if slide { window?.animator().setFrameOrigin(NSPoint(x: screen.maxX + 20, y: home.minY)) }
+    }, completionHandler: { app.terminate(nil) })
+  }
+}
 
 // Content: icon, bold title, message. Text colors follow light/dark mode.
 // The class color is a thin wash over the glass (NSGlassEffectView.tintColor barely shows).
@@ -93,11 +178,12 @@ func label(_ s: String, _ font: NSFont, _ color: NSColor, _ y: CGFloat) {
 label(title, .systemFont(ofSize: 13, weight: .semibold), .labelColor, 33)
 label(message, .systemFont(ofSize: 13), .secondaryLabelColor, 14)
 
+let banner = BannerView(frame: content.frame)
 if #available(macOS 26.0, *) {
   let glass = NSGlassEffectView(frame: content.frame)
   glass.cornerRadius = radius
   glass.contentView = content
-  panel.contentView = glass
+  banner.addSubview(glass)
 } else {
   let blur = NSVisualEffectView(frame: content.frame)
   blur.material = .hudWindow
@@ -107,14 +193,13 @@ if #available(macOS 26.0, *) {
   blur.layer?.cornerRadius = radius
   blur.layer?.masksToBounds = true
   blur.addSubview(content)
-  panel.contentView = blur
+  banner.addSubview(blur)
 }
+banner.addSubview(banner.close)
+panel.contentView = banner
 
 panel.alphaValue = 0
 panel.orderFrontRegardless()
 NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }
-DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-  NSAnimationContext.runAnimationGroup({ $0.duration = 0.4; panel.animator().alphaValue = 0 },
-                                       completionHandler: { app.terminate(nil) })
-}
+banner.scheduleHide(after: seconds)
 app.run()

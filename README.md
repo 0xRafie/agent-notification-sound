@@ -18,7 +18,7 @@ Claude Code adds classes so a ping from background work doesn't sound like the m
 | A cron/loop job ran | `Claude scheduled check` | none (banner only) |
 | A Monitor event arrived | `Claude monitor event` | none (banner only) |
 
-The banner is our own glass panel (`overlay/Overlay.swift`, built by `install.sh` into `bin/notify-overlay`), not a Notification Center banner: macOS banners can't be colored. It shows the agent's icon (`icons/claude.png`, Factory.app for Droid, Grok Bot.app for Grok), tints the glass by class (green done, orange still running, blue question, red failed, grey cron/monitor), stacks when several arrive, never takes focus and fades after 5 s (3.5 s for grey). Without `swiftc` it falls back to the plain macOS banner. OMP keeps its own in-app notification.
+The banner is our own glass panel (`overlay/Overlay.swift`, built by `install.sh` into `bin/notify-overlay`), not a Notification Center banner: macOS banners can't be colored. It shows the agent's icon (`icons/claude.png`, Factory.app for Droid, Grok Bot.app for Grok), tints the glass by class (green done, orange still running, blue question, red failed, grey cron/monitor), stacks when several arrive and never takes focus. Like a macOS banner it fades after 5 s (3.5 s for grey), stays while the pointer is on it (with a close button), and closes on click or a swipe to the right. Without `swiftc` it falls back to the plain macOS banner. OMP keeps its own in-app notification.
 
 Monitors don't count as running work. Every notification is logged to `~/Library/Logs/agent-notify.log`, so you can check what an earlier ping was. `./test.sh` runs every class in dry-run mode (`NOTIFY_DRY_RUN=1`).
 
