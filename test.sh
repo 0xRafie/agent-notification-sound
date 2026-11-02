@@ -110,6 +110,12 @@ t "grok drain commands"   grok "$(G drain "$GB")" "progress|Grok [proj]|Grok bac
 t "grok goal summary"     grok "$(G gsum)"        "quiet|Grok [proj]|Grok goal step|"
 t "grok goal step"        grok "$(G goal)"        "quiet|Grok [proj]|Grok goal step|"
 t "grok failure"          grok '{"hook_event_name":"StopFailure","cwd":"/x/proj"}' "failed|Grok [proj]|Grok task failed|Basso.aiff"
+# Banner mode: notify.sh mode [auto|sticky], stored under XDG_CONFIG_HOME.
+export XDG_CONFIG_HOME="$d/xdg"
+m() { got=$(bash "$N" mode "$@" 2>&1); [ "$got" = "$want" ] && echo "ok   mode $* -> $want" || { echo "FAIL mode $*: got '$got' want '$want'"; fail=1; }; }
+want=auto m; want=sticky m sticky; want=sticky m; want=auto m auto
+bash "$N" mode bogus >/dev/null 2>&1 && { echo "FAIL mode bogus accepted"; fail=1; } || echo "ok   mode bogus rejected"
+unset XDG_CONFIG_HOME
 # OMP: omp/test.ts drives the extension with a fake host.
 BUN=$(command -v bun || echo "$HOME/.bun/bin/bun")
 if [ -x "$BUN" ]; then

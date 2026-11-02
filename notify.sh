@@ -13,13 +13,25 @@
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
+# Banner mode: auto (fades out) or sticky (stays until you swipe or close it).
+mode_file="${XDG_CONFIG_HOME:-$HOME/.config}/agent-notification-sound/mode"
+if [ "${1:-}" = mode ]; then
+  case "${2:-}" in
+    auto | sticky) mkdir -p "$(dirname "$mode_file")" && echo "$2" >"$mode_file" ;;
+    "") ;;
+    *) echo "usage: notify.sh mode [auto|sticky]" >&2; exit 2 ;;
+  esac
+  cat "$mode_file" 2>/dev/null || echo auto
+  exit 0
+fi
+
 tool=${1:-}
 case "$tool" in
   claude) name=Claude ask=AskUserQuestion ;;
   droid) name=Droid ask=AskUser ;;
   grok) name=Grok ask=ask_user_question ;;
   codex) name=Codex ask=request_user_input ;;
-  *) echo "usage: notify.sh claude|droid|grok|codex" >&2; exit 0 ;;
+  *) echo "usage: notify.sh claude|droid|grok|codex   or   notify.sh mode [auto|sticky]" >&2; exit 0 ;;
 esac
 
 input=$(cat)
@@ -236,10 +248,11 @@ log="$HOME/Library/Logs/agent-notify.log"
 printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$log" 2>/dev/null
 [ "$(wc -l <"$log" 2>/dev/null)" -gt 2000 ] 2>/dev/null && { tail -n 1000 "$log" >"$log.tmp" && mv "$log.tmp" "$log"; }
 
-# Glass banner tinted by class (bin/notify-overlay, built by install.sh); it stays
-# up a few seconds, so it runs detached. Without it, the plain macOS banner.
+# Glass banner tinted by class (Agent Notify.app, built by install.sh); it stays
+# up a while, so it runs detached. Without it, the plain macOS banner.
 # Title and message go in as argv, never into script source.
-overlay="$(dirname "$0")/bin/notify-overlay"
+overlay="${AGENT_NOTIFY_APP:-$HOME/Applications/Agent Notify.app}/Contents/MacOS/notify-overlay"
+mode=$(cat "$mode_file" 2>/dev/null); [ "$mode" = sticky ] || mode=auto
 if [ -x "$overlay" ]; then
   case "$tool" in
     droid) icon=/Applications/Factory.app ;;
@@ -247,8 +260,7 @@ if [ -x "$overlay" ]; then
     codex) icon=codex ;;
     *) icon=claude ;;
   esac
-  slot=$(pgrep -x notify-overlay | wc -l | tr -d ' ')
-  nohup "$overlay" "$class" "$title" "$message" "$icon" "$slot" >/dev/null 2>&1 &
+  nohup "$overlay" "$class" "$title" "$message" "$icon" "$mode" >/dev/null 2>&1 &
 else
   /usr/bin/osascript - "$message" "$title" >/dev/null 2>&1 <<'APPLESCRIPT'
 on run argv

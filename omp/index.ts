@@ -3,7 +3,7 @@
  *
  * Plays a sound and sends a desktop notification when OMP finishes, fails, or
  * asks you a question, with the same titles, messages, sounds and glass banner
- * (../bin/notify-overlay, tinted by class) as ../notify.sh uses for
+ * (Agent Notify.app, tinted by class) as ../notify.sh uses for
  * Claude Code, Droid and Grok. Without the banner binary it falls back to
  * osascript; other platforms can use a custom sound command and in-app
  * OMP notifications.
@@ -26,11 +26,10 @@
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { existsSync, realpathSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, join } from "node:path";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -293,14 +292,17 @@ const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = {
   progress: "/System/Library/Sounds/Tink.aiff",
 };
 
-// The extension folder is a symlink into the agent-notification-sound repo.
-const OVERLAY = (() => {
+// Built by ../install.sh. Banner mode is shared with notify.sh (`notify.sh mode sticky`).
+const OVERLAY = join(homedir(), "Applications", "Agent Notify.app", "Contents", "MacOS", "notify-overlay");
+const MODE_FILE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-notification-sound", "mode");
+
+function bannerMode(): "auto" | "sticky" {
   try {
-    return join(dirname(realpathSync(fileURLToPath(import.meta.url))), "..", "bin", "notify-overlay");
+    return readFileSync(MODE_FILE, "utf8").trim() === "sticky" ? "sticky" : "auto";
   } catch {
-    return "";
+    return "auto";
   }
-})();
+}
 
 function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
   if (config.command?.command) {
@@ -320,14 +322,9 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
 function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
   if (platform() !== "darwin") return null;
 
-  if (OVERLAY && existsSync(OVERLAY)) {
-    // Stack below banners already on screen, like notify.sh does.
-    let slot = 0;
-    try {
-      slot = execFileSync("/usr/bin/pgrep", ["-x", "notify-overlay"], { encoding: "utf8" }).trim().split("\n").length;
-    } catch {} // pgrep exits 1 when none are running
+  if (existsSync(OVERLAY)) {
     const { title, message } = config.desktopNotification;
-    return { command: OVERLAY, args: [cls, title, message, "omp", String(slot)] };
+    return { command: OVERLAY, args: [cls, title, message, "omp", bannerMode()] };
   }
 
   return {

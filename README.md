@@ -44,7 +44,7 @@ A dash means the agent has no event for it: Codex and Droid don't report failed 
 
 ## The banner
 
-macOS Notification Center banners can't be colored, so this repo draws its own: a Liquid Glass panel (`overlay/Overlay.swift`) in the top-right corner with the agent's icon and a tint that fades from the icon side.
+macOS Notification Center banners can't be colored, so this repo draws its own: a Liquid Glass panel in the top-right corner with the agent's icon and a tint that fades from the icon side. It runs from a small app, `~/Applications/Agent Notify.app`, which `install.sh` builds from `overlay/`.
 
 <p align="center">
   <img src="docs/hover.png" width="400" alt="A banner with the close button shown on hover">
@@ -52,13 +52,39 @@ macOS Notification Center banners can't be colored, so this repo draws its own: 
 
 It behaves like a normal banner:
 
-- fades out after 5 seconds (3.5 for grey)
 - stays while the pointer is on it and shows a close button
 - closes on click or a two-finger swipe to the right
-- stacks when several arrive at once
+- stacks when several arrive at once, filling the first free spot
 - never takes focus from the app you are using
 
-These banners don't go to Notification Center. Every notification is logged to `~/Library/Logs/agent-notify.log`, so you can check what an earlier ping was:
+### Modes
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | fades out after 5 seconds (3.5 for grey) |
+| `sticky` | stays until you close or swipe it away |
+
+```bash
+~/agent-notification-sound/notify.sh mode sticky   # or: mode auto
+~/agent-notification-sound/notify.sh mode          # show the current mode
+```
+
+The mode is stored in `~/.config/agent-notification-sound/mode` and applies to every agent, OMP included.
+
+### Notification Center
+
+Each banner also files a copy in Notification Center under **Agent Notify**, grouped per agent, so you can look back after the banner is gone. Grey ones (cron, monitor, goal steps) are left out so a loop doesn't fill the list.
+
+These copies use macOS's *provisional* delivery: they go straight to Notification Center with no macOS banner on top of the glass one, and no permission prompt. Notification Center then asks under the first one whether to keep receiving them. Choose **Keep**, and if macOS offers a choice, keep delivery quiet: prominent delivery adds a plain macOS banner next to the glass one. **Turn Off** stops the copies but keeps the glass banner.
+
+To check the state:
+
+```bash
+~/Applications/Agent\ Notify.app/Contents/MacOS/notify-overlay --nc-status
+# authorization: provisional, in Notification Center: 3
+```
+
+Every notification is also logged to `~/Library/Logs/agent-notify.log`:
 
 ```
 2026-11-01 00:49:09	progress	Claude [dev]	Claude replied · 1 shell still running
@@ -75,7 +101,7 @@ git clone https://github.com/0xRafie/agent-notification-sound ~/agent-notificati
 
 Needs macOS, `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
 
-`install.sh` builds the banner and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
+`install.sh` builds `~/Applications/Agent Notify.app` (the banner) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
 
 After installing:
 
@@ -89,6 +115,7 @@ After installing:
 ## Configuration
 
 - **Messages and sounds** live at the top of `notify.sh`, and in the header of `omp/index.ts` for OMP. OMP can also be configured from `~/.omp/agent/config.yml`.
+- **Banner mode**: `notify.sh mode auto|sticky` (see [Modes](#modes)).
 - **Colors and timing** of the banner live in `overlay/Overlay.swift`. Run `install.sh` again to rebuild after changing them.
 - **Icons** are in `icons/`. Droid uses the icon of the installed Factory app.
 
@@ -105,7 +132,7 @@ Runs every class for every agent against fixture transcripts in dry-run mode (`N
 ```
 notify.sh             hook for Claude Code, Codex, Droid and Grok
 omp/index.ts          OMP extension
-overlay/Overlay.swift glass banner, built into bin/notify-overlay
+overlay/              glass banner: Overlay.swift, Info.plist and icon for Agent Notify.app
 icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks
 test.sh               dry-run tests

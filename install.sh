@@ -4,10 +4,20 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")" && pwd)"
 
-# Glass banner (overlay/Overlay.swift). Without it notify.sh falls back to the plain macOS banner.
+# Glass banner (overlay/Overlay.swift), built as ~/Applications/Agent Notify.app:
+# Notification Center only takes apps from there, not from this folder or /tmp.
+# Without swiftc, notify.sh falls back to the plain macOS banner.
+app="$HOME/Applications/Agent Notify.app"
 if command -v swiftc >/dev/null; then
-  mkdir -p "$repo/bin"
-  swiftc -O "$repo/overlay/Overlay.swift" -o "$repo/bin/notify-overlay" && echo "built: $repo/bin/notify-overlay"
+  rm -rf "$app" "$repo/bin"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/icons"
+  swiftc -O "$repo/overlay/Overlay.swift" -o "$app/Contents/MacOS/notify-overlay"
+  cp "$repo/overlay/Info.plist" "$app/Contents/"
+  cp "$repo/overlay/AppIcon.icns" "$app/Contents/Resources/"
+  cp "$repo"/icons/*.png "$app/Contents/Resources/icons/"
+  codesign --force --sign - "$app" >/dev/null 2>&1
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
+  echo "built: $app"
 else
   echo "warning: swiftc not found (xcode-select --install); using the plain macOS banner"
 fi

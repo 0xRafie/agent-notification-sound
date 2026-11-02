@@ -1,23 +1,42 @@
 // Glass notification banner with a class-colored tint, drawn top-right.
-// Behaves like a macOS banner: never takes focus, fades out after a few seconds,
-// stays while the pointer is over it (with a close button), and closes on click
-// or a two-finger swipe to the right.
-// Usage: notify-overlay <class> <title> <message> [icon] [slot]
+// Behaves like a macOS banner: never takes focus, stays while the pointer is
+// over it (with a close button), and closes on click or a two-finger swipe to
+// the right. In "auto" mode it also fades out after a few seconds; in "sticky"
+// mode it stays until you close it. It also files a copy in Notification Center
+// (provisional delivery: no macOS banner, no permission prompt), except for
+// the grey "quiet" class.
+// Usage: notify-overlay <class> <title> <message> [icon] [auto|sticky]
+//        notify-overlay --nc-status
 //   class  done | progress | question | failed | quiet
-//   icon   a name from icons/ (claude, omp), or a path to an .app or image file
-//   slot   0, 1, 2 … stacks banners when several are on screen at once
-// Built by install.sh into bin/notify-overlay (needs macOS 26 for Liquid Glass;
-// older macOS falls back to a blurred material).
+//   icon   a name from the repo's icons/ (claude, codex, grok, omp), or a path to an .app or image file
+// install.sh builds it into ~/Applications/Agent Notify.app (Notification Center
+// only accepts apps there, not in /tmp). Needs macOS 26 for Liquid Glass; older
+// macOS falls back to a blurred material.
 import AppKit
+import UserNotifications
 
 let args = CommandLine.arguments
+// `notify-overlay --nc-status`: Notification Center authorization and how many
+// of this app's notifications are there now (for troubleshooting).
+if args.count == 2, args[1] == "--nc-status" {
+  let center = UNUserNotificationCenter.current()
+  center.getNotificationSettings { s in
+    let status = [0: "not determined", 1: "denied", 2: "authorized", 3: "provisional", 4: "ephemeral"][s.authorizationStatus.rawValue] ?? "?"
+    center.getDeliveredNotifications { d in
+      print("authorization: \(status), in Notification Center: \(d.count)")
+      exit(0)
+    }
+  }
+  RunLoop.main.run(until: Date().addingTimeInterval(5))
+  exit(1)
+}
 guard args.count >= 4 else {
-  FileHandle.standardError.write("usage: notify-overlay <class> <title> <message> [icon] [slot]\n".data(using: .utf8)!)
+  FileHandle.standardError.write("usage: notify-overlay <class> <title> <message> [icon] [auto|sticky]\n".data(using: .utf8)!)
   exit(2)
 }
 let cls = args[1], title = args[2], message = args[3]
 let iconArg = args.count > 4 ? args[4] : "claude"
-let slot = CGFloat(args.count > 5 ? Int(args[5]) ?? 0 : 0)
+let sticky = args.count > 5 && args[5] == "sticky"
 
 let tints: [String: NSColor] = [
   "done": NSColor(srgbRed: 0.19, green: 0.78, blue: 0.36, alpha: 1),
@@ -49,10 +68,9 @@ func sparkIcon(size: CGFloat) -> NSImage {
 
 func icon(size: CGFloat) -> NSImage {
   let fm = FileManager.default
-  if !iconArg.contains("/") { // a name: icons/<name>.png in this repo
-    let repo = URL(fileURLWithPath: args[0]).resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
-    if let img = NSImage(contentsOf: repo.appendingPathComponent("icons/\(iconArg).png")) { return img }
-  }
+  if !iconArg.contains("/"), // a name: icons/<name>.png, bundled into the app by install.sh
+     let url = Bundle.main.url(forResource: iconArg, withExtension: "png", subdirectory: "icons"),
+     let img = NSImage(contentsOf: url) { return img }
   if iconArg.hasSuffix(".app"), fm.fileExists(atPath: iconArg) { return NSWorkspace.shared.icon(forFile: iconArg) }
   if fm.fileExists(atPath: iconArg), let img = NSImage(contentsOfFile: iconArg) { return img }
   return sparkIcon(size: size)
@@ -65,9 +83,59 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 DispatchQueue.main.async { app.setActivationPolicy(.accessory) }
 
-let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22
+// Notification Center copy: delivered quietly, grouped per agent ("Claude [dev]" → "Claude").
+let ncPending = cls != "quiet"
+if ncPending {
+  let center = UNUserNotificationCenter.current()
+  center.requestAuthorization(options: [.provisional]) { _, _ in
+    let n = UNMutableNotificationContent()
+    n.title = title
+    n.body = message
+    n.threadIdentifier = String(title.split(separator: " ").first ?? "agent")
+    center.add(UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)) { _ in
+      DispatchQueue.main.async { ncDone = true; if quitting { app.terminate(nil) } }
+    }
+  }
+}
+var ncDone = !ncPending, quitting = false
+/// Quit once the banner is gone and the Notification Center copy is filed.
+func quit() {
+  if !slotFile.isEmpty { unlink(slotFile); slotFile = "" }
+  quitting = true
+  if ncDone { app.terminate(nil) }
+}
+
+let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22, gap: CGFloat = 8
 let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-let home = NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - slot * (h + 8), width: w, height: h)
+/// Claims the first free slot (0 = top) so stacked banners never overlap, even
+/// when several start at once: each banner holds a lock file named after its
+/// slot until it closes. A lock whose process is gone counts as free.
+let slotDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/agent-notify/slots").path
+var slotFile = ""
+func freeSlot() -> CGFloat {
+  try? FileManager.default.createDirectory(atPath: slotDir, withIntermediateDirectories: true)
+  let maxSlot = max(0, Int((screen.height - margin) / (h + gap)) - 1)
+  for i in 0...maxSlot {
+    let path = "\(slotDir)/\(i)"
+    for _ in 0..<2 {
+      let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+      if fd >= 0 {
+        let pid = "\(getpid())"
+        _ = pid.withCString { write(fd, $0, strlen($0)) }
+        close(fd)
+        slotFile = path
+        return CGFloat(i)
+      }
+      // Taken: free it only if its owner is gone, then try once more.
+      guard let owner = try? String(contentsOfFile: path, encoding: .utf8), let opid = Int32(owner),
+            kill(opid, 0) != 0, errno == ESRCH else { break }
+      unlink(path)
+    }
+  }
+  return CGFloat(maxSlot)
+}
+let slot = freeSlot()
+let home = NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - slot * (h + gap), width: w, height: h)
 
 let panel = NSPanel(contentRect: home, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 panel.level = .statusBar
@@ -111,6 +179,7 @@ final class BannerView: NSView {
 
   func scheduleHide(after s: Double) {
     hideWork?.cancel()
+    if sticky { return }
     let work = DispatchWorkItem { [weak self] in self?.dismiss(slide: false) }
     hideWork = work
     DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: work)
@@ -156,7 +225,7 @@ final class BannerView: NSView {
       ctx.duration = slide ? 0.25 : 0.4
       window?.animator().alphaValue = 0
       if slide { window?.animator().setFrameOrigin(NSPoint(x: screen.maxX + 20, y: home.minY)) }
-    }, completionHandler: { app.terminate(nil) })
+    }, completionHandler: { self.window?.orderOut(nil); quit() })
   }
 }
 
