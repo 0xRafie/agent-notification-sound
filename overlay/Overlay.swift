@@ -173,6 +173,19 @@ panel.becomesKeyOnlyIfNeeded = true
 panel.hidesOnDeactivate = false
 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
+/// Debug log of swipe handling, only while ~/Library/Caches/agent-notify/debug exists.
+let debugOn = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Caches/agent-notify/debug")
+let debugLog = NSHomeDirectory() + "/Library/Logs/agent-notify-swipe.log"
+func dlog(_ s: @autoclosure () -> String) {
+  guard debugOn else { return }
+  let line = String(format: "%.3f", ProcessInfo.processInfo.systemUptime) + " pid=\(getpid()) \(s())\n"
+  // O_APPEND: several banner processes write here at once without losing lines.
+  let fd = open(debugLog, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+  guard fd >= 0 else { return }
+  _ = line.withCString { write(fd, $0, strlen($0)) }
+  close(fd)
+}
+
 /// Ease-out curve close to the one macOS uses for banners.
 let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
 
@@ -281,8 +294,9 @@ final class BannerView: NSView {
   // to the right closes it, anything else snaps back. Mice without gesture
   // phases: enough rightward scrolling within half a second closes it.
   var lastWheel = Date.distantPast
-  override func scrollWheel(with event: NSEvent) { handle(event) }
-  func handle(_ event: NSEvent) {
+  override func scrollWheel(with event: NSEvent) { handle(event, from: "card") }
+  func handle(_ event: NSEvent, from source: String = "?") {
+    dlog("event from=\(source) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) dx=\(event.scrollingDeltaX) precise=\(event.hasPreciseScrollingDeltas) inv=\(event.isDirectionInvertedFromDevice) tracking=\(tracking) swipe=\(swipe) closing=\(closing)")
     guard !closing else { return }
     var dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
     if event.phase.isEmpty && event.momentumPhase.isEmpty {
@@ -303,12 +317,16 @@ final class BannerView: NSView {
     lastScroll = Date()
     if began || !tracking {
       tracking = true
+      // Fully transparent window pixels pass events to the window below, so
+      // once the card slides past the pointer the rest of the gesture (and
+      // its end) went to another app. A 1% veil keeps it with this window.
+      superview?.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
       swipe = 0
       samples = []
       // The card slides out from under the pointer, and macOS then sends the
       // rest of the gesture to the app below; keep listening there too.
       if monitor == nil {
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in self?.handle(e) }
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in self?.handle(e, from: "global") }
       }
     }
     swipe += dx
@@ -329,11 +347,13 @@ final class BannerView: NSView {
 
   func stopListening() {
     if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+    superview?.layer?.backgroundColor = nil
     tracking = false
   }
 
   func finishSwipe() {
     let v = velocity
+    dlog("finish swipe=\(swipe) velocity=\(v) -> \(swipe > 90 || (v > 450 && swipe > 8) ? "close" : "snap back")")
     stopListening()
     if swipe > 90 || (v > 450 && swipe > 8) {
       dismiss(slide: true, speed: v)
@@ -344,6 +364,7 @@ final class BannerView: NSView {
   }
 
   func dismiss(slide: Bool, speed: CGFloat = 0) {
+    dlog("dismiss slide=\(slide) speed=\(speed) closing=\(closing) offset=\(offset)")
     guard !closing else { return }
     closing = true
     hideWork?.cancel()
@@ -353,6 +374,7 @@ final class BannerView: NSView {
     let distance = endX - shownX(offset)
     let duration = slide && speed > 0 ? min(0.3, max(0.12, Double(distance / speed) * 1.6)) : 0.28
     animate(to: endX, opacity: 0, duration: duration, timing: slide ? CAMediaTimingFunction(name: .easeOut) : easeOut) {
+      dlog("dismiss animation done -> quit")
       self.window?.orderOut(nil)
       quit()
     }
@@ -366,7 +388,7 @@ final class RootView: NSView {
     if banner.tracking, bounds.contains(convert(point, from: superview)) { return self }
     return super.hitTest(point)
   }
-  override func scrollWheel(with event: NSEvent) { banner.handle(event) }
+  override func scrollWheel(with event: NSEvent) { banner.handle(event, from: "root") }
 }
 
 // Content: icon, bold title, message. Text colors follow light/dark mode.
@@ -416,6 +438,7 @@ if #available(macOS 26.0, *) {
 }
 banner.addSubview(banner.close)
 let root = RootView(frame: NSRect(origin: .zero, size: panel.frame.size))
+root.wantsLayer = true
 root.addSubview(banner)
 panel.contentView = root
 
@@ -437,7 +460,7 @@ Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
 // It has to be long: a finger resting mid-swipe sends no events at all, and
 // the real end of the gesture is caught by the global monitor anyway.
 Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-  if banner.tracking, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 4 { banner.finishSwipe() }
+  if banner.tracking, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 4 { dlog("watchdog fired"); banner.finishSwipe() }
 }
 // Manual check: AGENT_NOTIFY_FAKE_SWIPE=120 (or 20) fakes a slow swipe of that
 // many points whose end never arrives; after 4 s, 120 must close, 20 must snap back.
