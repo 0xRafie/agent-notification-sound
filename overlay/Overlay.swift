@@ -219,16 +219,23 @@ final class BannerView: NSView {
       return
     }
     guard event.momentumPhase.isEmpty else { return }
+    lastScroll = Date()
     if event.phase.contains(.began) { swipe = 0 }
     swipe = max(0, swipe + dx)
     if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-      if swipe > 50 { dismiss(slide: true) } else {
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.2; window?.animator().setFrame(home, display: true) }
-      }
-      swipe = 0
+      finishSwipe()
     } else {
       window?.setFrameOrigin(NSPoint(x: home.minX + swipe, y: home.minY))
     }
+  }
+
+  /// Far enough closes the banner, otherwise it snaps back.
+  var lastScroll = Date.distantPast
+  func finishSwipe() {
+    if swipe > 50 { dismiss(slide: true) } else {
+      NSAnimationContext.runAnimationGroup { $0.duration = 0.2; window?.animator().setFrame(home, display: true) }
+    }
+    swipe = 0
   }
 
   func dismiss(slide: Bool) {
@@ -295,6 +302,22 @@ panel.alphaValue = 0
 panel.orderFrontRegardless()
 NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }
 banner.scheduleHide(after: seconds)
+
+// The banner follows your fingers and can slide out from under the pointer;
+// macOS then sends the end of the gesture to the window below instead. So a
+// swipe that goes quiet for 0.3 s counts as finished.
+Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+  if banner.swipe > 0, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 0.3 { banner.finishSwipe() }
+}
+// Manual check: AGENT_NOTIFY_FAKE_SWIPE=120 (or 20) fakes a swipe of that many
+// points whose end never arrives; 120 must close, 20 must snap back.
+if let fake = ProcessInfo.processInfo.environment["AGENT_NOTIFY_FAKE_SWIPE"], let pts = Double(fake) {
+  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+    banner.swipe = CGFloat(pts)
+    banner.lastScroll = Date()
+    panel.setFrameOrigin(NSPoint(x: home.minX + CGFloat(pts), y: home.minY))
+  }
+}
 
 // Move up one step when the slot right above is free, so the stack closes a
 // gap in order (a banner never jumps past another). Not while you are pointing
