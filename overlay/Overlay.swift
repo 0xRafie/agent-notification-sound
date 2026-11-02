@@ -22,8 +22,12 @@ if args.count == 2, args[1] == "--nc-status" {
   let center = UNUserNotificationCenter.current()
   center.getNotificationSettings { s in
     let status = [0: "not determined", 1: "denied", 2: "authorized", 3: "provisional", 4: "ephemeral"][s.authorizationStatus.rawValue] ?? "?"
+    let style = [0: "none", 1: "banners", 2: "alerts"][s.alertStyle.rawValue] ?? "?"
     center.getDeliveredNotifications { d in
-      print("authorization: \(status), in Notification Center: \(d.count)")
+      print("authorization: \(status), alert style: \(style), in Notification Center: \(d.count)")
+      if s.authorizationStatus == .authorized && s.alertStyle != .none {
+        print("copies are skipped: macOS would show them as a second banner. Set System Settings > Notifications > Agent Notify > alert style to None.")
+      }
       exit(0)
     }
   }
@@ -84,16 +88,24 @@ app.setActivationPolicy(.prohibited)
 DispatchQueue.main.async { app.setActivationPolicy(.accessory) }
 
 // Notification Center copy: delivered quietly, grouped per agent ("Claude [dev]" → "Claude").
+// Skipped when macOS would also show it as a banner (you allowed Agent Notify
+// banners or alerts), so there is never a second banner over the glass one.
 let ncPending = cls != "quiet"
 if ncPending {
   let center = UNUserNotificationCenter.current()
-  center.requestAuthorization(options: [.provisional]) { _, _ in
+  center.getNotificationSettings { settings in
+    if settings.authorizationStatus == .authorized && settings.alertStyle != .none {
+      DispatchQueue.main.async { ncDone = true; if quitting { app.terminate(nil) } }
+      return
+    }
+    center.requestAuthorization(options: [.provisional]) { _, _ in
     let n = UNMutableNotificationContent()
     n.title = title
     n.body = message
     n.threadIdentifier = String(title.split(separator: " ").first ?? "agent")
     center.add(UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)) { _ in
       DispatchQueue.main.async { ncDone = true; if quitting { app.terminate(nil) } }
+    }
     }
   }
 }

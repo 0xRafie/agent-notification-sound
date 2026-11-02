@@ -75,7 +75,7 @@ The mode is stored in `~/.config/agent-notification-sound/mode` and applies to e
 
 Each banner also files a copy in Notification Center under **Agent Notify**, grouped per agent, so you can look back after the banner is gone. Grey ones (cron, monitor, goal steps) are left out so a loop doesn't fill the list.
 
-These copies use macOS's *provisional* delivery: they go straight to Notification Center with no macOS banner on top of the glass one, and no permission prompt. Notification Center then asks under the first one whether to keep receiving them. Choose **Keep**, and if macOS offers a choice, keep delivery quiet: prominent delivery adds a plain macOS banner next to the glass one. **Turn Off** stops the copies but keeps the glass banner.
+These copies use macOS's *provisional* delivery: they go straight to Notification Center with no macOS banner on top of the glass one, and no permission prompt. Under the first one, Notification Center asks whether to keep receiving them. Pressing **Keep** switches Agent Notify to *Alerts*, which would put a plain macOS banner over the glass one, so while the style is Alerts or Banners the copies are skipped. To keep the history, set **System Settings › Notifications › Agent Notify** to alert style **None** with *Show in Notification Center* on. **Turn Off** stops the copies; the glass banner keeps working either way.
 
 To check the state:
 
