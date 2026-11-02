@@ -151,24 +151,45 @@ var slot = (0...maxSlot).first(where: claim) ?? maxSlot
 slotFile = "\(slotDir)/\(slot)"
 var home = frame(forSlot: slot)
 
-let panel = NSPanel(contentRect: home, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+// The window stays put; only the card inside it moves (smooth, in step with the
+// display). It is wider than the card so the card can slide out to the right,
+// and padded so the card's shadow isn't clipped. Fully transparent parts let
+// clicks through to the app below.
+let pad: CGFloat = 12
+func windowFrame(_ home: NSRect) -> NSRect {
+  NSRect(x: home.minX - pad, y: home.minY - pad, width: w * 2 + margin + pad, height: h + pad * 2)
+}
+let panel = NSPanel(contentRect: windowFrame(home), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 panel.level = .statusBar
 panel.isOpaque = false
 panel.backgroundColor = .clear
-panel.hasShadow = true
+panel.hasShadow = false
 panel.becomesKeyOnlyIfNeeded = true
 panel.hidesOnDeactivate = false
 panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
-/// Takes every click, hover and swipe on the banner; the icon and labels don't.
+/// Ease-out curve close to the one macOS uses for banners.
+let easeOut = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+
+/// The card: takes every click, hover and swipe; the icon and labels don't.
 final class BannerView: NSView {
   let close = NSButton()
   var hideWork: DispatchWorkItem?
-  var swipe: CGFloat = 0
+  var swipe: CGFloat = 0          // how far the fingers have dragged it (points)
+  var tracking = false            // a trackpad swipe is in progress
   var closing = false
+  var lastScroll = Date.distantPast
+  var samples: [(t: TimeInterval, dx: CGFloat)] = []
+  var monitor: Any?
 
   override init(frame: NSRect) {
     super.init(frame: frame)
+    wantsLayer = true
+    layer?.shadowColor = NSColor.black.cgColor
+    layer?.shadowOpacity = 0.22
+    layer?.shadowRadius = 9
+    layer?.shadowOffset = CGSize(width: 0, height: -3)
+    layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
     close.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Close")
     close.isBordered = false
     close.imageScaling = .scaleProportionallyUpOrDown
@@ -199,15 +220,24 @@ final class BannerView: NSView {
     DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: work)
   }
   override func mouseEntered(with event: NSEvent) { hideWork?.cancel(); close.isHidden = false }
-  override func mouseExited(with event: NSEvent) { close.isHidden = true; scheduleHide(after: 2.5) }
+  override func mouseExited(with event: NSEvent) { close.isHidden = true; if !closing { scheduleHide(after: 2.5) } }
   override func mouseUp(with event: NSEvent) { dismiss(slide: false) }
   @objc func closeClicked() { dismiss(slide: false) }
 
-  // Trackpad: the banner follows a two-finger swipe to the right; far enough
-  // closes it, otherwise it snaps back. Mice without gesture phases: enough
-  // rightward scrolling within half a second closes it.
+  /// Moves the card `x` points right of its place (a little resistance to the
+  /// left), fading as it goes.
+  func setOffset(_ x: CGFloat) {
+    let shown = x >= 0 ? x : max(-14, x * 0.25)
+    setFrameOrigin(NSPoint(x: pad + shown, y: pad))
+    alphaValue = 1 - min(1, max(0, shown) / w) * 0.8
+  }
+
+  // Trackpad: the card follows a two-finger swipe; a far drag or a quick flick
+  // to the right closes it, anything else snaps back. Mice without gesture
+  // phases: enough rightward scrolling within half a second closes it.
   var lastWheel = Date.distantPast
-  override func scrollWheel(with event: NSEvent) {
+  override func scrollWheel(with event: NSEvent) { handle(event) }
+  func handle(_ event: NSEvent) {
     guard !closing else { return }
     var dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
     if event.phase.isEmpty && event.momentumPhase.isEmpty {
@@ -220,34 +250,79 @@ final class BannerView: NSView {
     }
     guard event.momentumPhase.isEmpty else { return }
     lastScroll = Date()
-    if event.phase.contains(.began) { swipe = 0 }
-    swipe = max(0, swipe + dx)
+    if event.phase.contains(.began) || !tracking {
+      tracking = true
+      swipe = 0
+      samples = []
+      // The card slides out from under the pointer, and macOS then sends the
+      // rest of the gesture to the app below; keep listening there too.
+      if monitor == nil {
+        monitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] e in self?.handle(e) }
+      }
+    }
+    swipe += dx
+    samples.append((event.timestamp, dx))
+    samples.removeAll { event.timestamp - $0.t > 0.1 }
     if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
       finishSwipe()
     } else {
-      window?.setFrameOrigin(NSPoint(x: home.minX + swipe, y: home.minY))
+      setOffset(swipe)
     }
   }
 
-  /// Far enough closes the banner, otherwise it snaps back.
-  var lastScroll = Date.distantPast
+  /// Rightward speed of the last 0.1 s of the swipe, in points per second.
+  var velocity: CGFloat {
+    guard let first = samples.first, let last = samples.last, last.t > first.t else { return 0 }
+    return samples.reduce(0) { $0 + $1.dx } / CGFloat(max(last.t - first.t, 0.016))
+  }
+
+  func stopListening() {
+    if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+    tracking = false
+  }
+
   func finishSwipe() {
-    if swipe > 50 { dismiss(slide: true) } else {
-      NSAnimationContext.runAnimationGroup { $0.duration = 0.2; window?.animator().setFrame(home, display: true) }
+    let v = velocity
+    stopListening()
+    if swipe > 90 || (v > 450 && swipe > 8) {
+      dismiss(slide: true, speed: v)
+    } else {
+      NSAnimationContext.runAnimationGroup { ctx in
+        ctx.duration = 0.35
+        ctx.timingFunction = easeOut
+        animator().setFrameOrigin(NSPoint(x: pad, y: pad))
+        animator().alphaValue = 1
+      }
     }
     swipe = 0
   }
 
-  func dismiss(slide: Bool) {
+  func dismiss(slide: Bool, speed: CGFloat = 0) {
     guard !closing else { return }
     closing = true
     hideWork?.cancel()
+    stopListening()
+    let endX = slide ? pad + w + margin + 8 : frame.minX + 24
+    // A flick keeps its speed; otherwise a short ease-out.
+    let distance = endX - frame.minX
+    let duration = slide && speed > 0 ? min(0.3, max(0.12, Double(distance / speed) * 1.6)) : 0.28
     NSAnimationContext.runAnimationGroup({ ctx in
-      ctx.duration = slide ? 0.25 : 0.4
-      window?.animator().alphaValue = 0
-      if slide { window?.animator().setFrameOrigin(NSPoint(x: screen.maxX + 20, y: home.minY)) }
+      ctx.duration = duration
+      ctx.timingFunction = slide ? CAMediaTimingFunction(name: .easeOut) : easeOut
+      animator().setFrameOrigin(NSPoint(x: endX, y: pad))
+      animator().alphaValue = 0
     }, completionHandler: { self.window?.orderOut(nil); quit() })
   }
+}
+
+/// The window's content: the card plus empty room for it to slide into.
+final class RootView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    // While a swipe is in progress the whole window takes the scroll events.
+    if banner.tracking, bounds.contains(convert(point, from: superview)) { return self }
+    return super.hitTest(point)
+  }
+  override func scrollWheel(with event: NSEvent) { banner.handle(event) }
 }
 
 // Content: icon, bold title, message. Text colors follow light/dark mode.
@@ -278,7 +353,7 @@ func label(_ s: String, _ font: NSFont, _ color: NSColor, _ y: CGFloat) {
 label(title, .systemFont(ofSize: 13, weight: .semibold), .labelColor, 33)
 label(message, .systemFont(ofSize: 13), .secondaryLabelColor, 14)
 
-let banner = BannerView(frame: content.frame)
+let banner = BannerView(frame: NSRect(x: pad, y: pad, width: w, height: h))
 if #available(macOS 26.0, *) {
   let glass = NSGlassEffectView(frame: content.frame)
   glass.cornerRadius = radius
@@ -296,26 +371,34 @@ if #available(macOS 26.0, *) {
   banner.addSubview(blur)
 }
 banner.addSubview(banner.close)
-panel.contentView = banner
+let root = RootView(frame: NSRect(origin: .zero, size: panel.frame.size))
+root.addSubview(banner)
+panel.contentView = root
 
-panel.alphaValue = 0
+// Slide in from the right, like macOS banners.
+banner.setFrameOrigin(NSPoint(x: pad + 44, y: pad))
+banner.alphaValue = 0
 panel.orderFrontRegardless()
-NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }
+NSAnimationContext.runAnimationGroup { ctx in
+  ctx.duration = 0.45
+  ctx.timingFunction = easeOut
+  banner.animator().setFrameOrigin(NSPoint(x: pad, y: pad))
+  banner.animator().alphaValue = 1
+}
 banner.scheduleHide(after: seconds)
 
-// The banner follows your fingers and can slide out from under the pointer;
-// macOS then sends the end of the gesture to the window below instead. So a
-// swipe that goes quiet for 0.3 s counts as finished.
+// Safety net: a swipe that goes quiet for 0.3 s without an end counts as finished.
 Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-  if banner.swipe > 0, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 0.3 { banner.finishSwipe() }
+  if banner.tracking, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 0.3 { banner.finishSwipe() }
 }
-// Manual check: AGENT_NOTIFY_FAKE_SWIPE=120 (or 20) fakes a swipe of that many
-// points whose end never arrives; 120 must close, 20 must snap back.
+// Manual check: AGENT_NOTIFY_FAKE_SWIPE=120 (or 20) fakes a slow swipe of that
+// many points whose end never arrives; 120 must close, 20 must snap back.
 if let fake = ProcessInfo.processInfo.environment["AGENT_NOTIFY_FAKE_SWIPE"], let pts = Double(fake) {
-  DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+  DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+    banner.tracking = true
     banner.swipe = CGFloat(pts)
     banner.lastScroll = Date()
-    panel.setFrameOrigin(NSPoint(x: home.minX + CGFloat(pts), y: home.minY))
+    banner.setOffset(CGFloat(pts))
   }
 }
 
@@ -323,11 +406,15 @@ if let fake = ProcessInfo.processInfo.environment["AGENT_NOTIFY_FAKE_SWIPE"], le
 // gap in order (a banner never jumps past another). Not while you are pointing
 // at this one or swiping it.
 Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
-  guard slot > 0, !banner.closing, banner.swipe == 0, banner.close.isHidden, claim(slot - 1) else { return }
+  guard slot > 0, !banner.closing, !banner.tracking, banner.close.isHidden, claim(slot - 1) else { return }
   unlink(slotFile)
   slot -= 1
   slotFile = "\(slotDir)/\(slot)"
   home = frame(forSlot: slot)
-  NSAnimationContext.runAnimationGroup { $0.duration = 0.25; panel.animator().setFrame(home, display: true) }
+  NSAnimationContext.runAnimationGroup { ctx in
+    ctx.duration = 0.35
+    ctx.timingFunction = easeOut
+    panel.animator().setFrame(windowFrame(home), display: true)
+  }
 }
 app.run()
