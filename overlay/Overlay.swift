@@ -119,35 +119,37 @@ func quit() {
 
 let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22, gap: CGFloat = 8
 let screen = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-/// Claims the first free slot (0 = top) so stacked banners never overlap, even
-/// when several start at once: each banner holds a lock file named after its
-/// slot until it closes. A lock whose process is gone counts as free.
+/// Slots (0 = top) keep stacked banners from overlapping, even when several
+/// start at once: each banner holds a lock file named after its slot until it
+/// closes. A lock whose process is gone counts as free. When a banner above
+/// closes, the ones below move up into the gap, like macOS banners do.
 let slotDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/agent-notify/slots").path
+let maxSlot = max(0, Int((screen.height - margin) / (h + gap)) - 1)
 var slotFile = ""
-func freeSlot() -> CGFloat {
-  try? FileManager.default.createDirectory(atPath: slotDir, withIntermediateDirectories: true)
-  let maxSlot = max(0, Int((screen.height - margin) / (h + gap)) - 1)
-  for i in 0...maxSlot {
-    let path = "\(slotDir)/\(i)"
-    for _ in 0..<2 {
-      let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
-      if fd >= 0 {
-        let pid = "\(getpid())"
-        _ = pid.withCString { write(fd, $0, strlen($0)) }
-        close(fd)
-        slotFile = path
-        return CGFloat(i)
-      }
-      // Taken: free it only if its owner is gone, then try once more.
-      guard let owner = try? String(contentsOfFile: path, encoding: .utf8), let opid = Int32(owner),
-            kill(opid, 0) != 0, errno == ESRCH else { break }
-      unlink(path)
+/// Takes slot `i` if it is free (or its owner died); true on success.
+func claim(_ i: Int) -> Bool {
+  let path = "\(slotDir)/\(i)"
+  for _ in 0..<2 {
+    let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o644)
+    if fd >= 0 {
+      let pid = "\(getpid())"
+      _ = pid.withCString { write(fd, $0, strlen($0)) }
+      close(fd)
+      return true
     }
+    guard let owner = try? String(contentsOfFile: path, encoding: .utf8), let opid = Int32(owner),
+          kill(opid, 0) != 0, errno == ESRCH else { return false }
+    unlink(path)
   }
-  return CGFloat(maxSlot)
+  return false
 }
-let slot = freeSlot()
-let home = NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - slot * (h + gap), width: w, height: h)
+func frame(forSlot i: Int) -> NSRect {
+  NSRect(x: screen.maxX - w - margin, y: screen.maxY - margin - h - CGFloat(i) * (h + gap), width: w, height: h)
+}
+try? FileManager.default.createDirectory(atPath: slotDir, withIntermediateDirectories: true)
+var slot = (0...maxSlot).first(where: claim) ?? maxSlot
+slotFile = "\(slotDir)/\(slot)"
+var home = frame(forSlot: slot)
 
 let panel = NSPanel(contentRect: home, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
 panel.level = .statusBar
@@ -293,4 +295,16 @@ panel.alphaValue = 0
 panel.orderFrontRegardless()
 NSAnimationContext.runAnimationGroup { $0.duration = 0.2; panel.animator().alphaValue = 1 }
 banner.scheduleHide(after: seconds)
+
+// Move up one step when the slot right above is free, so the stack closes a
+// gap in order (a banner never jumps past another). Not while you are pointing
+// at this one or swiping it.
+Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+  guard slot > 0, !banner.closing, banner.swipe == 0, banner.close.isHidden, claim(slot - 1) else { return }
+  unlink(slotFile)
+  slot -= 1
+  slotFile = "\(slotDir)/\(slot)"
+  home = frame(forSlot: slot)
+  NSAnimationContext.runAnimationGroup { $0.duration = 0.25; panel.animator().setFrame(home, display: true) }
+}
 app.run()

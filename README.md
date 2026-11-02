@@ -54,7 +54,7 @@ It behaves like a normal banner:
 
 - stays while the pointer is on it and shows a close button
 - closes on click or a two-finger swipe to the right
-- stacks when several arrive at once, filling the first free spot
+- stacks when several arrive at once; when one closes, the ones below move up
 - never takes focus from the app you are using
 
 ### Modes
