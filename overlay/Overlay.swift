@@ -81,11 +81,16 @@ func icon(size: CGFloat) -> NSImage {
 }
 
 let app = NSApplication.shared
-// Launch as .prohibited so macOS doesn't activate the banner and pull keyboard
-// focus away from your app (.accessory at launch did, for ~3 s). Switch to
-// .accessory once running: that doesn't activate it, and hover events need it.
+// .prohibited for the whole run: macOS can then never make the banner the
+// active app, so your typing stays where it is. (.accessory, even switched to
+// after launch, still got activated now and then and took keyboard focus.)
+// Hover is tracked by polling the pointer, since mouse-entered events need
+// .accessory. If the app is activated anyway, focus goes straight back.
 app.setActivationPolicy(.prohibited)
-DispatchQueue.main.async { app.setActivationPolicy(.accessory) }
+let previousApp = NSWorkspace.shared.frontmostApplication
+NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+  previousApp?.activate()
+}
 
 // Notification Center copy: delivered quietly, grouped per agent ("Claude [dev]" → "Claude").
 // Skipped when macOS would also show it as a banner (you allowed Agent Notify
@@ -219,17 +224,57 @@ final class BannerView: NSView {
     hideWork = work
     DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: work)
   }
-  override func mouseEntered(with event: NSEvent) { hideWork?.cancel(); close.isHidden = false }
-  override func mouseExited(with event: NSEvent) { close.isHidden = true; if !closing { scheduleHide(after: 2.5) } }
+  override func mouseEntered(with event: NSEvent) { pointerEntered() }
+  override func mouseExited(with event: NSEvent) { pointerLeft() }
+  var hovering = false
+  func pointerEntered() { guard !hovering else { return }; hovering = true; hideWork?.cancel(); close.isHidden = false }
+  func pointerLeft() { guard hovering else { return }; hovering = false; close.isHidden = true; if !closing { scheduleHide(after: 2.5) } }
   override func mouseUp(with event: NSEvent) { dismiss(slide: false) }
   @objc func closeClicked() { dismiss(slide: false) }
 
   /// Moves the card `x` points right of its place (a little resistance to the
-  /// left), fading as it goes.
+  /// left), fading as it goes. It's a layer transform, applied by the
+  /// compositor every frame; moving the view's frame made AppKit and the glass
+  /// redraw and the card stepped a few points at a time instead of gliding.
+  var offset: CGFloat = 0
+  func shownX(_ x: CGFloat) -> CGFloat { x >= 0 ? x : max(-14, x * 0.25) }
+  func fade(_ x: CGFloat) -> Float { Float(1 - min(1, max(0, x) / w) * 0.8) }
   func setOffset(_ x: CGFloat) {
-    let shown = x >= 0 ? x : max(-14, x * 0.25)
-    setFrameOrigin(NSPoint(x: pad + shown, y: pad))
-    alphaValue = 1 - min(1, max(0, shown) / w) * 0.8
+    offset = x
+    guard let layer = layer else { return }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    layer.removeAllAnimations()
+    layer.setAffineTransform(CGAffineTransform(translationX: shownX(x), y: 0))
+    layer.opacity = fade(shownX(x))
+    CATransaction.commit()
+  }
+
+  /// Animates the card from where it is now (mid-animation included) to offset
+  /// `x` and the given opacity.
+  func animate(to x: CGFloat, opacity: Float, duration: Double, timing: CAMediaTimingFunction, done: (() -> Void)? = nil) {
+    guard let layer = layer else { done?(); return }
+    let fromT = layer.presentation()?.affineTransform() ?? layer.affineTransform()
+    let fromO = layer.presentation()?.opacity ?? layer.opacity
+    offset = x
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    CATransaction.setCompletionBlock { done?() }
+    layer.removeAllAnimations()
+    layer.setAffineTransform(CGAffineTransform(translationX: x, y: 0))
+    layer.opacity = opacity
+    let move = CABasicAnimation(keyPath: "transform")
+    move.fromValue = NSValue(caTransform3D: CATransform3DMakeAffineTransform(fromT))
+    move.toValue = NSValue(caTransform3D: CATransform3DMakeTranslation(x, 0, 0))
+    let alpha = CABasicAnimation(keyPath: "opacity")
+    alpha.fromValue = fromO
+    alpha.toValue = opacity
+    for a in [move, alpha] {
+      a.duration = duration
+      a.timingFunction = timing
+      layer.add(a, forKey: a.keyPath)
+    }
+    CATransaction.commit()
   }
 
   // Trackpad: the card follows a two-finger swipe; a far drag or a quick flick
@@ -249,8 +294,14 @@ final class BannerView: NSView {
       return
     }
     guard event.momentumPhase.isEmpty else { return }
+    drag(dx, began: event.phase.contains(.began), ended: event.phase.contains(.ended) || event.phase.contains(.cancelled), time: event.timestamp)
+  }
+
+  /// One step of a trackpad swipe (also driven directly by AGENT_NOTIFY_SIM).
+  func drag(_ dx: CGFloat, began: Bool, ended: Bool, time: TimeInterval) {
+    guard !closing else { return }
     lastScroll = Date()
-    if event.phase.contains(.began) || !tracking {
+    if began || !tracking {
       tracking = true
       swipe = 0
       samples = []
@@ -261,9 +312,9 @@ final class BannerView: NSView {
       }
     }
     swipe += dx
-    samples.append((event.timestamp, dx))
-    samples.removeAll { event.timestamp - $0.t > 0.1 }
-    if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+    samples.append((time, dx))
+    samples.removeAll { time - $0.t > 0.1 }
+    if ended {
       finishSwipe()
     } else {
       setOffset(swipe)
@@ -287,12 +338,7 @@ final class BannerView: NSView {
     if swipe > 90 || (v > 450 && swipe > 8) {
       dismiss(slide: true, speed: v)
     } else {
-      NSAnimationContext.runAnimationGroup { ctx in
-        ctx.duration = 0.35
-        ctx.timingFunction = easeOut
-        animator().setFrameOrigin(NSPoint(x: pad, y: pad))
-        animator().alphaValue = 1
-      }
+      animate(to: 0, opacity: 1, duration: 0.35, timing: easeOut)
     }
     swipe = 0
   }
@@ -302,16 +348,14 @@ final class BannerView: NSView {
     closing = true
     hideWork?.cancel()
     stopListening()
-    let endX = slide ? pad + w + margin + 8 : frame.minX + 24
+    let endX = slide ? w + margin + 8 : shownX(offset) + 24
     // A flick keeps its speed; otherwise a short ease-out.
-    let distance = endX - frame.minX
+    let distance = endX - shownX(offset)
     let duration = slide && speed > 0 ? min(0.3, max(0.12, Double(distance / speed) * 1.6)) : 0.28
-    NSAnimationContext.runAnimationGroup({ ctx in
-      ctx.duration = duration
-      ctx.timingFunction = slide ? CAMediaTimingFunction(name: .easeOut) : easeOut
-      animator().setFrameOrigin(NSPoint(x: endX, y: pad))
-      animator().alphaValue = 0
-    }, completionHandler: { self.window?.orderOut(nil); quit() })
+    animate(to: endX, opacity: 0, duration: duration, timing: slide ? CAMediaTimingFunction(name: .easeOut) : easeOut) {
+      self.window?.orderOut(nil)
+      quit()
+    }
   }
 }
 
@@ -376,29 +420,72 @@ root.addSubview(banner)
 panel.contentView = root
 
 // Slide in from the right, like macOS banners.
-banner.setFrameOrigin(NSPoint(x: pad + 44, y: pad))
-banner.alphaValue = 0
+banner.setOffset(44)
+banner.layer?.opacity = 0
 panel.orderFrontRegardless()
-NSAnimationContext.runAnimationGroup { ctx in
-  ctx.duration = 0.45
-  ctx.timingFunction = easeOut
-  banner.animator().setFrameOrigin(NSPoint(x: pad, y: pad))
-  banner.animator().alphaValue = 1
-}
+banner.animate(to: 0, opacity: 1, duration: 0.45, timing: easeOut)
 banner.scheduleHide(after: seconds)
 
-// Safety net: a swipe that goes quiet for 0.3 s without an end counts as finished.
-Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-  if banner.tracking, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 0.3 { banner.finishSwipe() }
+// Hover by polling the pointer (see the activation policy note above).
+Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+  guard !banner.closing, let win = banner.window else { return }
+  let card = win.convertToScreen(banner.convert(banner.bounds, to: nil))
+  if card.contains(NSEvent.mouseLocation) { banner.pointerEntered() } else { banner.pointerLeft() }
+}
+
+// Last-resort safety net: a swipe with no event for 4 s counts as finished.
+// It has to be long: a finger resting mid-swipe sends no events at all, and
+// the real end of the gesture is caught by the global monitor anyway.
+Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+  if banner.tracking, !banner.closing, Date().timeIntervalSince(banner.lastScroll) > 4 { banner.finishSwipe() }
 }
 // Manual check: AGENT_NOTIFY_FAKE_SWIPE=120 (or 20) fakes a slow swipe of that
-// many points whose end never arrives; 120 must close, 20 must snap back.
+// many points whose end never arrives; after 4 s, 120 must close, 20 must snap back.
 if let fake = ProcessInfo.processInfo.environment["AGENT_NOTIFY_FAKE_SWIPE"], let pts = Double(fake) {
   DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
     banner.tracking = true
     banner.swipe = CGFloat(pts)
     banner.lastScroll = Date()
     banner.setOffset(CGFloat(pts))
+  }
+}
+
+// Test hook: AGENT_NOTIFY_SIM=<pattern> replays a trackpad swipe (began,
+// changed…, ended) through the swipe code at ~120 events/s with fractional
+// deltas like a real trackpad. Patterns: slow, slowfar, pause, back, jitter.
+if let pattern = ProcessInfo.processInfo.environment["AGENT_NOTIFY_SIM"] {
+  // (seconds from start, rightward points) for each event.
+  var steps: [(TimeInterval, CGFloat)] = []
+  func run(_ from: TimeInterval, _ secs: TimeInterval, _ speed: CGFloat, jitter: Bool = false) -> TimeInterval {
+    var t = from
+    while t < from + secs {
+      let dt = jitter ? TimeInterval.random(in: 0.005...0.022) : 1.0 / 120
+      steps.append((t, speed * CGFloat(dt) * (jitter ? CGFloat.random(in: 0.4...1.6) : 1)))
+      t += dt
+    }
+    return t
+  }
+  switch pattern {
+  case "slow": _ = run(0, 2, 30)
+  case "slowfar": _ = run(0, 3, 50)
+  case "pause": let t = run(0, 1, 40); _ = run(t + 0.6, 1, 40)
+  case "back": let t = run(0, 1.5, 40); _ = run(t, 1.5, -40)
+  default: _ = run(0, 2, 40, jitter: true)
+  }
+  func send(_ dx: CGFloat, _ phase: Int) {
+    banner.drag(dx, began: phase == 1, ended: phase == 4, time: ProcessInfo.processInfo.systemUptime)
+  }
+  // A thread with a precise clock feeds the main thread; asyncAfter timers get
+  // coalesced by macOS into ~60 ms bursts, which a real trackpad never does.
+  Thread.detachNewThread {
+    let t0 = ProcessInfo.processInfo.systemUptime + 0.8
+    for (i, step) in steps.enumerated() {
+      let wait = t0 + step.0 - ProcessInfo.processInfo.systemUptime
+      if wait > 0 { usleep(useconds_t(wait * 1_000_000)) }
+      DispatchQueue.main.async { send(step.1, i == 0 ? 1 : 2) }
+    }
+    usleep(10_000)
+    DispatchQueue.main.async { send(0, 4) }
   }
 }
 
