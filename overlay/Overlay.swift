@@ -2,38 +2,15 @@
 // Behaves like a macOS banner: never takes focus, stays while the pointer is
 // over it (with a close button), and closes on click or a two-finger swipe to
 // the right. In "auto" mode it also fades out after a few seconds; in "sticky"
-// mode it stays until you close it. It also files a copy in Notification Center
-// (provisional delivery: no macOS banner, no permission prompt), except for
-// the grey "quiet" class.
+// mode it stays until you close it.
 // Usage: notify-overlay <class> <title> <message> [icon] [auto|sticky]
-//        notify-overlay --nc-status
 //   class  done | progress | question | failed | quiet
 //   icon   a name from the repo's icons/ (claude, codex, grok, omp), or a path to an .app or image file
-// install.sh builds it into ~/Applications/Agent Notify.app (Notification Center
-// only accepts apps there, not in /tmp). Needs macOS 26 for Liquid Glass; older
-// macOS falls back to a blurred material.
+// install.sh builds it into ~/Applications/Agent Notify.app. Needs macOS 26 for
+// Liquid Glass; older macOS falls back to a blurred material.
 import AppKit
-import UserNotifications
 
 let args = CommandLine.arguments
-// `notify-overlay --nc-status`: Notification Center authorization and how many
-// of this app's notifications are there now (for troubleshooting).
-if args.count == 2, args[1] == "--nc-status" {
-  let center = UNUserNotificationCenter.current()
-  center.getNotificationSettings { s in
-    let status = [0: "not determined", 1: "denied", 2: "authorized", 3: "provisional", 4: "ephemeral"][s.authorizationStatus.rawValue] ?? "?"
-    let style = [0: "none", 1: "banners", 2: "alerts"][s.alertStyle.rawValue] ?? "?"
-    center.getDeliveredNotifications { d in
-      print("authorization: \(status), alert style: \(style), in Notification Center: \(d.count)")
-      if s.authorizationStatus == .authorized && s.alertStyle != .none {
-        print("copies are skipped: macOS would show them as a second banner. Set System Settings > Notifications > Agent Notify > alert style to None.")
-      }
-      exit(0)
-    }
-  }
-  RunLoop.main.run(until: Date().addingTimeInterval(5))
-  exit(1)
-}
 guard args.count >= 4 else {
   FileHandle.standardError.write("usage: notify-overlay <class> <title> <message> [icon] [auto|sticky]\n".data(using: .utf8)!)
   exit(2)
@@ -92,34 +69,10 @@ NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNot
   previousApp?.activate()
 }
 
-// Notification Center copy: delivered quietly, grouped per agent ("Claude [dev]" → "Claude").
-// Skipped when macOS would also show it as a banner (you allowed Agent Notify
-// banners or alerts), so there is never a second banner over the glass one.
-let ncPending = cls != "quiet"
-if ncPending {
-  let center = UNUserNotificationCenter.current()
-  center.getNotificationSettings { settings in
-    if settings.authorizationStatus == .authorized && settings.alertStyle != .none {
-      DispatchQueue.main.async { ncDone = true; if quitting { app.terminate(nil) } }
-      return
-    }
-    center.requestAuthorization(options: [.provisional]) { _, _ in
-    let n = UNMutableNotificationContent()
-    n.title = title
-    n.body = message
-    n.threadIdentifier = String(title.split(separator: " ").first ?? "agent")
-    center.add(UNNotificationRequest(identifier: UUID().uuidString, content: n, trigger: nil)) { _ in
-      DispatchQueue.main.async { ncDone = true; if quitting { app.terminate(nil) } }
-    }
-    }
-  }
-}
-var ncDone = !ncPending, quitting = false
-/// Quit once the banner is gone and the Notification Center copy is filed.
+/// Quit once the banner is gone, releasing its slot.
 func quit() {
   if !slotFile.isEmpty { unlink(slotFile); slotFile = "" }
-  quitting = true
-  if ncDone { app.terminate(nil) }
+  app.terminate(nil)
 }
 
 let w: CGFloat = 356, h: CGFloat = 64, margin: CGFloat = 14, radius: CGFloat = 22, gap: CGFloat = 8

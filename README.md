@@ -71,20 +71,9 @@ It behaves like a normal banner:
 
 The mode is stored in `~/.config/agent-notification-sound/mode` and applies to every agent, OMP included.
 
-### Notification Center
+### History
 
-Each banner also files a copy in Notification Center under **Agent Notify**, grouped per agent, so you can look back after the banner is gone. Grey ones (cron, monitor, goal steps) are left out so a loop doesn't fill the list.
-
-These copies use macOS's *provisional* delivery: they go straight to Notification Center with no macOS banner on top of the glass one, and no permission prompt. Under the first one, Notification Center asks whether to keep receiving them. Pressing **Keep** switches Agent Notify to *Alerts*, which would put a plain macOS banner over the glass one, so while the style is Alerts or Banners the copies are skipped. To keep the history, set **System Settings › Notifications › Agent Notify** to alert style **None** with *Show in Notification Center* on. **Turn Off** stops the copies; the glass banner keeps working either way.
-
-To check the state:
-
-```bash
-~/Applications/Agent\ Notify.app/Contents/MacOS/notify-overlay --nc-status
-# authorization: provisional, in Notification Center: 3
-```
-
-Every notification is also logged to `~/Library/Logs/agent-notify.log`:
+The glass banners don't go to Notification Center: it only shows plain macOS notifications, without the class colors. Every notification is logged to `~/Library/Logs/agent-notify.log` instead:
 
 ```
 2026-11-01 00:49:09	progress	Claude [dev]	Claude replied · 1 shell still running
