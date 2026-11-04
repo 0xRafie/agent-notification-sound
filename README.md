@@ -2,7 +2,7 @@
 
 macOS notifications for coding agents that tell you *why* they pinged. A finished task, a subagent that is still running, a question and a cron tick each get their own message, color and sound, so you stop switching windows for nothing.
 
-Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok. It also runs on Linux, with regular desktop notifications instead of the glass banner (see [Linux](#linux)).
+Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok. It also runs on Linux, where it uses the desktop's own notifications (see [Linux](#linux)).
 
 <p align="center">
   <img src="docs/hero.png" width="420" alt="Five banners: Claude task completed (green), Codex replied with 2 subagents still running (orange), Droid asks a question (blue), OMP task failed (red), Grok scheduled check (grey)">
@@ -114,7 +114,7 @@ git clone https://github.com/0xRafie/agent-notification-sound ~/agent-notificati
 
 Needs macOS, `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
 
-On Linux it needs `/usr/bin/jq`, `notify-send` (libnotify) and either `pw-play` or `paplay`. Install whichever is missing with your package manager. Nothing is built, so `install.sh` only wires the hooks.
+On Linux it needs `/usr/bin/jq`, `notify-send` (libnotify) and either `pw-play` or `paplay`. Install whichever is missing with your package manager. Nothing is built: `install.sh` wires the hooks and, on GNOME, links and enables the extension.
 
 `install.sh` builds `~/Applications/Agent Notify.app` (the banner) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
 
@@ -124,6 +124,7 @@ After installing:
 - **Codex**: open `/hooks` and trust the new hooks. Codex skips new hooks until you do.
 - **OMP**: restart running sessions.
 - **Droid and Grok**: nothing to do.
+- **GNOME**: log out and back in once, so GNOME Shell loads the extension.
 
 `fx-ok01.wav` is read from `~/.factory/sounds/`. If it isn't there, macOS Glass plays instead.
 
