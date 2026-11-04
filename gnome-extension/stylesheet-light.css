@@ -1,32 +1,39 @@
 /* Class tints for the light shell theme: the upstream banner colors at 45% on the
-   icon side fading to 4% on the right, blended over the theme's banner color. */
+   icon side fading to 4% on the right, blended over the theme's banner color.
+   St draws the box-shadow of a gradient background as a square box, so the
+   tinted banners go without the theme's (faint) shadow. */
 
 .notification-banner.agent-notify-done {
   background-gradient-direction: horizontal;
   background-gradient-start: #a2e6b6;
   background-gradient-end: #f7fdf8;
+  box-shadow: none;
 }
 
 .notification-banner.agent-notify-progress {
   background-gradient-direction: horizontal;
   background-gradient-start: #ffd391;
   background-gradient-end: #fffbf5;
+  box-shadow: none;
 }
 
 .notification-banner.agent-notify-question {
   background-gradient-direction: horizontal;
   background-gradient-start: #91c8ff;
   background-gradient-end: #f5faff;
+  box-shadow: none;
 }
 
 .notification-banner.agent-notify-failed {
   background-gradient-direction: horizontal;
   background-gradient-start: #ffa7a2;
   background-gradient-end: #fff7f7;
+  box-shadow: none;
 }
 
 .notification-banner.agent-notify-quiet {
   background-gradient-direction: horizontal;
   background-gradient-start: #cdcdcf;
   background-gradient-end: #fbfbfb;
+  box-shadow: none;
 }
