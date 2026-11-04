@@ -273,8 +273,8 @@ printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$lo
 overlay="${AGENT_NOTIFY_APP:-$HOME/Applications/Agent Notify.app}/Contents/MacOS/notify-overlay"
 mode=$(cat "$mode_file" 2>/dev/null); [ "$mode" = sticky ] || mode=auto
 if [ -n "$linux" ]; then
-  # A regular desktop notification: notification servers draw their own banner,
-  # so there are no class colors. Sticky mode uses critical urgency, the only
+  # A regular desktop notification. Notification servers draw their own banner,
+  # so the class colors need gnome-extension/ (it reads the class hint). Sticky mode uses critical urgency, the only
   # one GNOME keeps on screen until you close it (it also shows during Do Not
   # Disturb). The -t timeout is ignored by GNOME but used by KDE, dunst, mako.
   icon="$(cd "$(dirname "$0")" && pwd)/icons/$tool.png"
@@ -282,7 +282,8 @@ if [ -n "$linux" ]; then
   urgency=normal timeout=5000
   [ "$class" = quiet ] && timeout=3500
   [ "$mode" = sticky ] && urgency=critical timeout=0
-  notify-send -a "$name" -i "$icon" -u "$urgency" -t "$timeout" "$title" "$message" >/dev/null 2>&1
+  notify-send -a "$name" -i "$icon" -u "$urgency" -t "$timeout" -h "string:x-agent-notify-class:$class" \
+    "$title" "$message" >/dev/null 2>&1
   if [ -n "$sound" ] && [ -f "$sound" ]; then
     if command -v pw-play >/dev/null; then pw-play "$sound"
     elif command -v paplay >/dev/null; then paplay "$sound"

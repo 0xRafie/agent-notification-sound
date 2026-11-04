@@ -1,0 +1,32 @@
+/* Class tints for the dark shell theme: the upstream banner colors at 45% on the
+   icon side fading to 4% on the right, blended over the theme's banner color. */
+
+.notification-banner.agent-notify-done {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #44885b;
+  background-gradient-end: #53595a;
+}
+
+.notification-banner.agent-notify-progress {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #a17536;
+  background-gradient-end: #5b5757;
+}
+
+.notification-banner.agent-notify-question {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #336aa4;
+  background-gradient-end: #515661;
+}
+
+.notification-banner.agent-notify-failed {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #a14947;
+  background-gradient-end: #5b5358;
+}
+
+.notification-banner.agent-notify-quiet {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #6e6e74;
+  background-gradient-end: #56565c;
+}

@@ -369,6 +369,7 @@ function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls:
         "-a", "OMP", "-i", ompIcon(),
         "-u", sticky ? "critical" : "normal",
         "-t", sticky ? "0" : cls === "quiet" ? "3500" : "5000",
+        "-h", `string:x-agent-notify-class:${cls}`, // read by ../gnome-extension for the class color
         title, message,
       ],
     };

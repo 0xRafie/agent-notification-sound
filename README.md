@@ -83,7 +83,13 @@ On macOS before 26 the panel uses a regular blur. If `swiftc` is missing, everyt
 
 ## Linux
 
-Linux has no glass banner. The hooks send a regular desktop notification with `notify-send`, so it looks like every other notification on your desktop. On GNOME it slides in at the top center and stays in the notification list afterwards. The title, message, agent icon and sound follow the same classes as on macOS. Only the class colors are missing, because the notification server draws the banner.
+Linux has no glass banner. The hooks send a regular desktop notification with `notify-send`, so it looks like every other notification on your desktop. On GNOME it slides in at the top center and stays in the notification list afterwards. The title, message, agent icon and sound follow the same classes as on macOS.
+
+<p align="center">
+  <img src="docs/linux.png" width="420" alt="GNOME banners tinted green, orange, blue, red and grey by class">
+</p>
+
+The notification server draws the banner, so the class colors need a small GNOME Shell extension in `gnome-extension/`. Each notification carries its class in an `x-agent-notify-class` hint, and the extension tints that banner with the same colors as the macOS one, fading from the icon side. Notifications from other apps are left alone. `install.sh` links and enables it, and GNOME Shell loads it after you log out and back in. It is written for GNOME 50. On other desktops, and on GNOME without the extension, the banners keep the default color.
 
 | Class | Sound on Linux |
 |---|---|
@@ -142,6 +148,7 @@ Runs every class for every agent against fixture transcripts in dry-run mode (`N
 notify.sh             hook for Claude Code, Codex, Droid and Grok
 omp/index.ts          OMP extension
 overlay/              glass banner: Overlay.swift, Info.plist and icon for Agent Notify.app
+gnome-extension/      GNOME Shell extension that colors the Linux banners by class
 icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks
 test.sh               dry-run tests

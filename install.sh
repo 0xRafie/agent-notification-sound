@@ -15,6 +15,31 @@ if [ "$(uname -s)" = Linux ]; then
   command -v notify-send >/dev/null || echo "warning: notify-send not found (libnotify); only sounds will play"
   command -v pw-play >/dev/null || command -v paplay >/dev/null ||
     echo "warning: neither pw-play nor paplay found; notifications will be silent"
+  # GNOME: the extension in gnome-extension/ tints the banners by class.
+  uuid=agent-notify-colors@agent-notification-sound
+  if command -v gnome-extensions >/dev/null; then
+    ext_dir="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$uuid"
+    mkdir -p "$(dirname "$ext_dir")"
+    if [ -e "$ext_dir" ] && [ ! -L "$ext_dir" ]; then
+      echo "warning: $ext_dir is a real folder; move it away and re-run"
+    else
+      ln -sfn "$repo/gnome-extension" "$ext_dir"
+      echo "linked: $ext_dir"
+      # GNOME Shell only finds a new extension after it restarts (on Wayland: log
+      # out and back in). Until then, add it to the enabled list directly.
+      if gnome-extensions enable "$uuid" 2>/dev/null; then
+        echo "enabled: $uuid"
+      else
+        cur=$(gsettings get org.gnome.shell enabled-extensions)
+        case "$cur" in
+          *"'$uuid'"*) ;;
+          "@as []" | "[]") gsettings set org.gnome.shell enabled-extensions "['$uuid']" ;;
+          *) gsettings set org.gnome.shell enabled-extensions "${cur%]}, '$uuid']" ;;
+        esac
+        echo "note: log out and back in to load the GNOME extension (banner colors)"
+      fi
+    fi
+  fi
 elif command -v swiftc >/dev/null; then
   rm -rf "$app" "$repo/bin"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/icons"
