@@ -11,8 +11,12 @@
 #   quiet     "Claude scheduled check" / "Claude monitor event" / "Codex goal step"   no sound
 #             (Grok has all three)
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
+# On Linux: a desktop notification (notify-send) with the agent's icon, the same
+# messages, freedesktop sounds played through PipeWire/PulseAudio, and the log in
+# ~/.local/state/agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
+linux=; [ "$(uname -s)" = Linux ] && linux=1
 # Banner mode: auto (fades out) or sticky (stays until you swipe or close it).
 mode_file="${XDG_CONFIG_HOME:-$HOME/.config}/agent-notification-sound/mode"
 if [ "${1:-}" = mode ]; then
@@ -49,7 +53,8 @@ if [ "$tool" = codex ]; then
   fi
   # Codex hooks don't list running subagents, so keep one file per running
   # subagent (SubagentStart adds it, SubagentStop removes it). Silent events.
-  agents_dir="${CODEX_AGENTS_DIR:-$HOME/Library/Caches/agent-notify/codex}/$(field .session_id)"
+  cache=$HOME/Library/Caches; [ -n "$linux" ] && cache=${XDG_CACHE_HOME:-$HOME/.cache}
+  agents_dir="${CODEX_AGENTS_DIR:-$cache/agent-notify/codex}/$(field .session_id)"
   case "$(field .hook_event_name)" in
     SubagentStart) mkdir -p "$agents_dir" && touch "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
     SubagentStop) rm -f "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
@@ -224,6 +229,16 @@ case "$class" in
   progress) sound=/System/Library/Sounds/Tink.aiff ;;
   quiet) sound= ;;
 esac
+# Linux has no macOS system sounds: use the closest freedesktop ones.
+if [ -n "$linux" ]; then
+  fd=/usr/share/sounds/freedesktop/stereo
+  case "${sound##*/}" in
+    Glass.aiff) sound=$fd/complete.oga ;;
+    Basso.aiff) sound=$fd/dialog-error.oga ;;
+    Submarine.aiff) sound=$fd/message-new-instant.oga ;;
+    Tink.aiff) sound=$fd/message.oga ;;
+  esac
+fi
 
 cwd=$(field .cwd)
 title="$name [$(basename "${cwd:-$PWD}")]"
@@ -245,6 +260,10 @@ if [ "$tool" = claude ]; then
 fi
 
 log="$HOME/Library/Logs/agent-notify.log"
+if [ -n "$linux" ]; then
+  log="${XDG_STATE_HOME:-$HOME/.local/state}/agent-notify.log"
+  mkdir -p "$(dirname "$log")"
+fi
 printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$log" 2>/dev/null
 [ "$(wc -l <"$log" 2>/dev/null)" -gt 2000 ] 2>/dev/null && { tail -n 1000 "$log" >"$log.tmp" && mv "$log.tmp" "$log"; }
 
@@ -253,7 +272,24 @@ printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$lo
 # Title and message go in as argv, never into script source.
 overlay="${AGENT_NOTIFY_APP:-$HOME/Applications/Agent Notify.app}/Contents/MacOS/notify-overlay"
 mode=$(cat "$mode_file" 2>/dev/null); [ "$mode" = sticky ] || mode=auto
-if [ -x "$overlay" ]; then
+if [ -n "$linux" ]; then
+  # A regular desktop notification: notification servers draw their own banner,
+  # so there are no class colors. Sticky mode uses critical urgency, the only
+  # one GNOME keeps on screen until you close it (it also shows during Do Not
+  # Disturb). The -t timeout is ignored by GNOME but used by KDE, dunst, mako.
+  icon="$(cd "$(dirname "$0")" && pwd)/icons/$tool.png"
+  [ -f "$icon" ] || icon=utilities-terminal
+  urgency=normal timeout=5000
+  [ "$class" = quiet ] && timeout=3500
+  [ "$mode" = sticky ] && urgency=critical timeout=0
+  notify-send -a "$name" -i "$icon" -u "$urgency" -t "$timeout" "$title" "$message" >/dev/null 2>&1
+  if [ -n "$sound" ] && [ -f "$sound" ]; then
+    if command -v pw-play >/dev/null; then pw-play "$sound"
+    elif command -v paplay >/dev/null; then paplay "$sound"
+    else canberra-gtk-play -f "$sound"
+    fi >/dev/null 2>&1
+  fi
+elif [ -x "$overlay" ]; then
   case "$tool" in
     droid) icon=/Applications/Factory.app ;;
     grok) icon=grok ;;
@@ -268,7 +304,7 @@ on run argv
 end run
 APPLESCRIPT
 fi
-[ -n "$sound" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
+[ -n "$sound" ] && [ -z "$linux" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
 
 [ "$tool" = claude ] && printf '{"suppressOutput":true}'
 exit 0

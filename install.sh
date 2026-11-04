@@ -1,5 +1,6 @@
 #!/bin/bash
 # Wires notify.sh into Claude Code, Droid, Grok and Codex, and omp/ into Oh My Pi.
+# Works on macOS and Linux.
 # Safe to re-run: older notification hooks are replaced, other hooks are kept.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")" && pwd)"
@@ -7,8 +8,14 @@ repo="$(cd "$(dirname "$0")" && pwd)"
 # Glass banner (overlay/Overlay.swift), built as ~/Applications/Agent Notify.app:
 # Notification Center only takes apps from there, not from this folder or /tmp.
 # Without swiftc, notify.sh falls back to the plain macOS banner.
+# On Linux there is nothing to build: notify.sh and OMP use notify-send.
 app="$HOME/Applications/Agent Notify.app"
-if command -v swiftc >/dev/null; then
+if [ "$(uname -s)" = Linux ]; then
+  [ -x /usr/bin/jq ] || { echo "error: /usr/bin/jq not found (install jq with your package manager)"; exit 1; }
+  command -v notify-send >/dev/null || echo "warning: notify-send not found (libnotify); only sounds will play"
+  command -v pw-play >/dev/null || command -v paplay >/dev/null ||
+    echo "warning: neither pw-play nor paplay found; notifications will be silent"
+elif command -v swiftc >/dev/null; then
   rm -rf "$app" "$repo/bin"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/icons"
   swiftc -O "$repo/overlay/Overlay.swift" -o "$app/Contents/MacOS/notify-overlay"
