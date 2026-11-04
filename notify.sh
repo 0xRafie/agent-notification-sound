@@ -225,7 +225,15 @@ case "$class" in
   quiet) sound= ;;
 esac
 
-cwd=$(field .cwd)
+# The hook's cwd follows the agent's shell, so after a `cd` into a subfolder it
+# names that subfolder. Claude Code and Droid also pass the folder the session
+# was opened in, which is the project the title should name.
+case "$tool" in
+  claude) project=${CLAUDE_PROJECT_DIR:-} ;;
+  droid) project=${FACTORY_PROJECT_DIR:-} ;;
+  *) project= ;;
+esac
+cwd=${project:-$(field .cwd)}
 title="$name [$(basename "${cwd:-$PWD}")]"
 
 if [ -n "${NOTIFY_DRY_RUN:-}" ]; then
