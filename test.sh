@@ -1,6 +1,6 @@
 #!/bin/bash
 # Usage: test.sh  — feeds synthetic hook inputs to notify.sh in dry-run mode.
-N=~/agent-notification-sound/notify.sh; fail=0; d=$(mktemp -d)
+N="$(cd "$(dirname "$0")" && pwd)/notify.sh"; fail=0; d=$(mktemp -d)
 unset CLAUDE_PROJECT_DIR FACTORY_PROJECT_DIR # set when the tests run inside an agent
 mk() { printf '%s\n' '{"type":"assistant"}' "$1" '{"type":"user","message":{"content":[{"type":"tool_result"}]}}' >"$d/$2.jsonl"; }
 mk '{"type":"user","turnOrigin":"human","message":{"content":"halo"}}' human

@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The OMP cases in test.sh need bun.
+      - uses: oven-sh/setup-bun@v2
+
+      # notify.sh calls jq by its full path.
+      - name: jq at /usr/bin/jq
+        run: test -x /usr/bin/jq
+
+      - name: test.sh
+        run: bash test.sh
+
+      - name: build the banner
+        if: runner.os == 'macOS'
+        run: swiftc -O overlay/Overlay.swift -o "$RUNNER_TEMP/notify-overlay"
