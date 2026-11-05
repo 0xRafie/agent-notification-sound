@@ -14,9 +14,26 @@
 # On Linux: a desktop notification (notify-send) with the agent's icon, the same
 # messages, freedesktop sounds played through PipeWire/PulseAudio, and the log in
 # ~/.local/state/agent-notify.log.
+# On Windows (the hooks run in Git Bash): a banner tinted by class, drawn by
+# notify-overlay.exe (windows/Overlay.cs), sounds from C:\Windows\Media, and the
+# log in %LOCALAPPDATA%\agent-notify\agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
 linux=; [ "$(uname -s)" = Linux ] && linux=1
+windows=
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*) windows=1 local_app=$(cygpath -u "${LOCALAPPDATA:-$HOME/AppData/Local}") ;;
+esac
+# jq: /usr/bin/jq on macOS and Linux. On Windows, jq.exe from winget, which may not be on
+# the hook's PATH until the agent restarts, run with -b: it would end every
+# line with \r\n otherwise.
+if [ -n "$windows" ]; then
+  jq_exe=$(command -v jq || ls "$local_app"/Microsoft/WinGet/Packages/jqlang.jq_*/jq.exe 2>/dev/null | head -n 1)
+  jq() { command "${jq_exe:-jq}" -b "$@"; } # command: never this function itself
+else
+  jq() { /usr/bin/jq "$@"; }
+fi
+
 # Banner mode: auto (fades out) or sticky (stays until you swipe or close it).
 mode_file="${XDG_CONFIG_HOME:-$HOME/.config}/agent-notification-sound/mode"
 if [ "${1:-}" = mode ]; then
@@ -39,14 +56,14 @@ case "$tool" in
 esac
 
 input=$(cat)
-field() { printf '%s' "$input" | /usr/bin/jq -r "($1) // \"\"" 2>/dev/null; }
+field() { printf '%s' "$input" | jq -r "($1) // \"\"" 2>/dev/null; }
 
 if [ "$tool" = codex ]; then
   # Only the terminal app: `codex exec` runs scripted (Claude uses it as a
   # reviewer) and the ChatGPT/Codex desktop app shows its own notifications.
   transcript=$(field .transcript_path)
   if [ -f "$transcript" ]; then
-    case "$(head -n 1 "$transcript" | /usr/bin/jq -r '.payload.originator // ""' 2>/dev/null)" in
+    case "$(head -n 1 "$transcript" | jq -r '.payload.originator // ""' 2>/dev/null)" in
       "" | codex-tui | codex_cli_rs) ;;
       *) exit 0 ;;
     esac
@@ -54,6 +71,7 @@ if [ "$tool" = codex ]; then
   # Codex hooks don't list running subagents, so keep one file per running
   # subagent (SubagentStart adds it, SubagentStop removes it). Silent events.
   cache=$HOME/Library/Caches; [ -n "$linux" ] && cache=${XDG_CACHE_HOME:-$HOME/.cache}
+  [ -n "$windows" ] && cache=$local_app
   agents_dir="${CODEX_AGENTS_DIR:-$cache/agent-notify/codex}/$(field .session_id)"
   case "$(field .hook_event_name)" in
     SubagentStart) mkdir -p "$agents_dir" && touch "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
@@ -80,17 +98,17 @@ claude_stop() {
     origin_line=$(tail -c 8000000 "$transcript" | /usr/bin/grep -a '"turnOrigin"' | tail -n 1)
     [ -n "$origin_line" ] || origin_line=$(/usr/bin/grep -a '"turnOrigin"' "$transcript" | tail -n 1)
   fi
-  running=$(printf '%s' "$input" | /usr/bin/jq -r '
+  running=$(printf '%s' "$input" | jq -r '
     [(.background_tasks // [])[]
       | select(.status == "running" or .status == "pending")
       | select(.type | IN("monitor", "dream", "auto-mode scan", "memory import", "memory save") | not)]
     | group_by(.type)
     | map("\(length) \(.[0].type)\(if length > 1 then "s" else "" end)")
     | join(", ")' 2>/dev/null)
-  case "$(printf '%s' "$origin_line" | /usr/bin/jq -r '.turnOrigin // ""' 2>/dev/null)" in
+  case "$(printf '%s' "$origin_line" | jq -r '.turnOrigin // ""' 2>/dev/null)" in
     scheduled) origin=scheduled ;;
     task_notification)
-      summary=$(printf '%s' "$origin_line" | /usr/bin/jq -r '
+      summary=$(printf '%s' "$origin_line" | jq -r '
         .message.content | if type == "array" then map(.text? // "") | join(" ") else . end
         | capture("<summary>(?<s>[^<]*)</summary>").s // ""' 2>/dev/null)
       origin=finished
@@ -113,15 +131,15 @@ droid_stop() {
   local fdir=${FACTORY_DIR:-$HOME/.factory} sid transcript last id text f
   sid=$(field .session_id) transcript=$(field .transcript_path)
   if [ -f "$transcript" ]; then
-    last=$(tail -c 8000000 "$transcript" | /usr/bin/jq -c -R 'fromjson? | select(.type == "message" and .message.role == "user")
+    last=$(tail -c 8000000 "$transcript" | jq -c -R 'fromjson? | select(.type == "message" and .message.role == "user")
       | (.message.content | if type == "array" then . else [{type: "text", text: .}] end) as $c
       | select(any($c[]; .type == "tool_result") | not)
       | [$c[] | select(.type == "text") | .text | select(startswith("<system-reminder>") | not)] as $t
       | select(($t | length) > 0)
       | select(.id | test("^(context-|__internal__|todo-|mcp-auth|tool-catalog)") | not)
       | {id, text: $t[-1]}' 2>/dev/null | tail -n 1)
-    id=$(printf '%s' "$last" | /usr/bin/jq -r '.id // ""' 2>/dev/null)
-    text=$(printf '%s' "$last" | /usr/bin/jq -r '.text // ""' 2>/dev/null)
+    id=$(printf '%s' "$last" | jq -r '.id // ""' 2>/dev/null)
+    text=$(printf '%s' "$last" | jq -r '.text // ""' 2>/dev/null)
   fi
   case "$id:$text" in
     execute-completion:*)
@@ -133,14 +151,14 @@ droid_stop() {
     *)
       for f in "$fdir"/crons/*/"$sid"/*.json; do
         [ -f "$f" ] && [ -n "$text" ] &&
-          [ "$(/usr/bin/jq -r '.payload.prompt // ""' "$f" 2>/dev/null)" = "$text" ] && { origin=scheduled; break; }
+          [ "$(jq -r '.payload.prompt // ""' "$f" 2>/dev/null)" = "$text" ] && { origin=scheduled; break; }
       done ;;
   esac
   local shells=0 agents pid
-  for pid in $(/usr/bin/jq -r --arg s "$sid" '.processes[]? | select(.sessionId == $s) | .pid' "$fdir/background-processes.json" 2>/dev/null); do
-    kill -0 "$pid" 2>/dev/null && shells=$((shells + 1))
+  for pid in $(jq -r --arg s "$sid" '.processes[]? | select(.sessionId == $s) | .pid' "$fdir/background-processes.json" 2>/dev/null); do
+    if [ -n "$windows" ]; then /usr/bin/kill -W -0 "$pid" 2>/dev/null; else kill -0 "$pid" 2>/dev/null; fi && shells=$((shells + 1))
   done
-  agents=$(/usr/bin/jq -r --arg s "$sid" '[.invocations[]? | select(.parentSessionId == $s and .status == "running")] | length' "$fdir/task-invocations.json" 2>/dev/null)
+  agents=$(jq -r --arg s "$sid" '[.invocations[]? | select(.parentSessionId == $s and .status == "running")] | length' "$fdir/task-invocations.json" 2>/dev/null)
   running=$( { [ "${agents:-0}" -gt 0 ] && printf '%s subagent%s\n' "$agents" "$([ "$agents" -gt 1 ] && echo s)"
                [ "$shells" -gt 0 ] && printf '%s shell%s\n' "$shells" "$([ "$shells" -gt 1 ] && echo s)"; } | paste -sd, - | sed 's/,/, /g')
 }
@@ -156,8 +174,8 @@ grok_stop() {
   local chat line reason text
   chat="$(dirname "$(field '.transcriptPath // .transcript_path')")/chat_history.jsonl"
   [ -f "$chat" ] && line=$(tail -c 8000000 "$chat" | /usr/bin/grep -a '"prompt_index"' | tail -n 1)
-  reason=$(printf '%s' "$line" | /usr/bin/jq -r '.synthetic_reason // ""' 2>/dev/null)
-  text=$(printf '%s' "$line" | /usr/bin/jq -r '.content | if type == "array" then map(.text? // "") | join(" ") else . end' 2>/dev/null)
+  reason=$(printf '%s' "$line" | jq -r '.synthetic_reason // ""' 2>/dev/null)
+  text=$(printf '%s' "$line" | jq -r '.content | if type == "array" then map(.text? // "") | join(" ") else . end' 2>/dev/null)
   case "$reason" in
     # Wording from grok-build crates/codegen/xai-grok-tools/src/reminders/task_completion.rs
     task_completed) origin=finished what="background command"
@@ -177,7 +195,7 @@ grok_stop() {
     scheduler_fired) origin=scheduled ;;
     goal_summary | goal_classifier_nudge) origin=goal ;;
   esac
-  running=$(printf '%s' "$input" | /usr/bin/jq -r '
+  running=$(printf '%s' "$input" | jq -r '
     [(.backgroundTasks // [])[] | select(.status == "running" or .status == "pending") | select(.type != "monitor")]
     | group_by(.type)
     | map("\(length) \(.[0].type)\(if length > 1 then "s" else "" end)")
@@ -192,7 +210,7 @@ codex_stop() {
   tid=$(field .turn_id) transcript=$(field .transcript_path)
   if [ -f "$transcript" ] && [ -n "$tid" ] &&
      ! /usr/bin/grep -a "\"turn_id\":\"$tid\"" "$transcript" | /usr/bin/grep -aq '"type":"UserMessage"' &&
-     [ "$(/usr/bin/grep -a '"thread_goal_updated"' "$transcript" | tail -n 1 | /usr/bin/jq -r '.payload.goal.status // ""' 2>/dev/null)" = active ]; then
+     [ "$(/usr/bin/grep -a '"thread_goal_updated"' "$transcript" | tail -n 1 | jq -r '.payload.goal.status // ""' 2>/dev/null)" = active ]; then
     origin=goal
   fi
   if [ -d "$agents_dir" ]; then
@@ -239,6 +257,16 @@ if [ -n "$linux" ]; then
     Tink.aiff) sound=$fd/message.oga ;;
   esac
 fi
+# Windows: the closest sounds in C:\Windows\Media, all .wav, which the banner plays.
+if [ -n "$windows" ]; then
+  wm="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/Media"
+  case "${sound##*/}" in
+    Glass.aiff) sound="$wm/Windows Notify System Generic.wav" ;;
+    Basso.aiff) sound="$wm/Windows Critical Stop.wav" ;;
+    Submarine.aiff) sound="$wm/Windows Notify Messaging.wav" ;;
+    Tink.aiff) sound="$wm/Windows Balloon.wav" ;;
+  esac
+fi
 
 # The hook's cwd follows the agent's shell, so after a `cd` into a subfolder it
 # names that subfolder. Claude Code and Droid also pass the folder the session
@@ -257,8 +285,12 @@ if [ -n "${NOTIFY_DRY_RUN:-}" ]; then
 fi
 
 # Other harnesses can replay ~/.claude/settings.json hooks; only notify when
-# Claude Code itself is an ancestor of this hook.
-if [ "$tool" = claude ]; then
+# Claude Code itself is an ancestor of this hook. Git Bash can't see native
+# Windows parents (PPID is 1), so there the check is CLAUDECODE=1, which Claude
+# Code sets in its own environment and so in every hook it runs.
+if [ "$tool" = claude ] && [ -n "$windows" ]; then
+  [ -n "${CLAUDECODE:-}" ] || exit 0
+elif [ "$tool" = claude ]; then
   pid=$PPID
   until [ "${pid:-1}" -le 1 ]; do
     case "$(ps -p "$pid" -o command= 2>/dev/null)" in claude | claude\ * | */claude | */claude\ *) break ;; esac
@@ -270,6 +302,8 @@ fi
 log="$HOME/Library/Logs/agent-notify.log"
 if [ -n "$linux" ]; then
   log="${XDG_STATE_HOME:-$HOME/.local/state}/agent-notify.log"
+elif [ -n "$windows" ]; then
+  log="$local_app/agent-notify/agent-notify.log"
   mkdir -p "$(dirname "$log")"
 fi
 printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$log" 2>/dev/null
@@ -298,6 +332,22 @@ if [ -n "$linux" ]; then
     else canberra-gtk-play -f "$sound"
     fi >/dev/null 2>&1
   fi
+elif [ -n "$windows" ]; then
+  # Banner tinted by class, drawn by notify-overlay.exe (windows/Overlay.cs,
+  # built by install.sh). It plays the sound too and stays up a while, so it
+  # runs detached. Files go in as Windows paths. Droid shows droid.exe's icon.
+  overlay="${AGENT_NOTIFY_EXE:-$local_app/Programs/Agent Notify/notify-overlay.exe}"
+  case "$tool" in
+    droid) icon=$(command -v droid.exe || true) ;;
+    *) icon="$(cd "$(dirname "$0")" && pwd)/icons/$tool.png" ;;
+  esac
+  [ -n "$icon" ] && icon=$(cygpath -w "$icon")
+  [ -n "$sound" ] && [ -f "$sound" ] && sound=$(cygpath -w "$sound") || sound=
+  if [ -f "$overlay" ]; then
+    "$overlay" "$class" "$title" "$message" "$icon" "$mode" "$sound" </dev/null >/dev/null 2>&1 &
+  elif [ -n "$sound" ]; then
+    powershell.exe -NoProfile -NonInteractive -Command "(New-Object Media.SoundPlayer '${sound//\'/\'\'}').PlaySync()" </dev/null >/dev/null 2>&1 &
+  fi
 elif [ -x "$overlay" ]; then
   case "$tool" in
     droid) icon=/Applications/Factory.app ;;
@@ -313,7 +363,7 @@ on run argv
 end run
 APPLESCRIPT
 fi
-[ -n "$sound" ] && [ -z "$linux" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
+[ -n "$sound" ] && [ -z "$linux$windows" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
 
 [ "$tool" = claude ] && printf '{"suppressOutput":true}'
 exit 0

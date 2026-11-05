@@ -10,8 +10,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash # Git Bash on Windows, which is what the hooks run in
     steps:
       - uses: actions/checkout@v4
 
@@ -24,13 +27,23 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sound-theme-freedesktop pulseaudio-utils
 
-      # notify.sh calls jq by its full path.
-      - name: jq at /usr/bin/jq
-        run: test -x /usr/bin/jq
+      # notify.sh calls jq by its full path on macOS and Linux, and finds jq.exe on Windows.
+      - name: jq
+        run: if [ "$RUNNER_OS" = Windows ]; then command -v jq; else test -x /usr/bin/jq; fi
+
+      # Same compiler, options and place as install.sh: OMP plays its sounds through it.
+      - name: build and install the banner (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          exe="$(cygpath -u "$LOCALAPPDATA")/Programs/Agent Notify/notify-overlay.exe"
+          mkdir -p "$(dirname "$exe")"
+          csc="$(cygpath -u "$SYSTEMROOT")/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+          "$csc" -nologo -optimize -target:winexe -out:"$(cygpath -w "$exe")" \
+            -r:System.Windows.Forms.dll -r:System.Drawing.dll "$(cygpath -w windows/Overlay.cs)"
 
       - name: test.sh
         run: bash test.sh
 
-      - name: build the banner
+      - name: build the banner (macOS)
         if: runner.os == 'macOS'
         run: swiftc -O overlay/Overlay.swift -o "$RUNNER_TEMP/notify-overlay"

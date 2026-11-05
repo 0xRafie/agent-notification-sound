@@ -13,12 +13,18 @@ mk '{"type":"user","turnOrigin":"task_notification","message":{"content":"<task-
 BG2='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"subagent","status":"running"},{"id":"m","type":"monitor","status":"running"},{"id":"c","type":"shell","status":"completed"}]'
 BG1='[{"id":"s","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
 MON='[{"id":"m","type":"monitor","status":"running"}]'
-# Expectations name the macOS sounds; on Linux the hooks use freedesktop ones.
-# Without ~/.factory/sounds/fx-ok01.wav (a fresh machine, CI) "done" plays Glass.
-snd() { local v=$1
-  [ -f "$HOME/.factory/sounds/fx-ok01.wav" ] || v=$(printf '%s' "$v" | sed 's/fx-ok01\.wav/Glass.aiff/g')
-  if [ "$(uname -s)" = Linux ]; then printf '%s' "$v" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
-    -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/'; else printf '%s' "$v"; fi; }
+# Expectations name the macOS sounds; on Linux the hooks use the freedesktop
+# ones and on Windows the ones in C:\Windows\Media. Without
+# ~/.factory/sounds/fx-ok01.wav (a fresh machine, CI) "done" plays Glass.
+snd() { local s=$1
+  [ -f "$HOME/.factory/sounds/fx-ok01.wav" ] || s=$(printf '%s' "$s" | sed 's/fx-ok01\.wav/Glass.aiff/g')
+  case "$(uname -s)" in
+    Linux) printf '%s' "$s" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
+      -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/' ;;
+    MINGW* | MSYS* | CYGWIN*) printf '%s' "$s" | sed -e 's/Basso\.aiff/Windows Critical Stop.wav/' \
+      -e 's/Submarine\.aiff/Windows Notify Messaging.wav/' -e 's/Tink\.aiff/Windows Balloon.wav/' -e 's/Glass\.aiff/Windows Notify System Generic.wav/' ;;
+    *) printf '%s' "$s" ;;
+  esac; }
 t() { # name tool json expected
   got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2"); want=$(snd "$4")
   if [ "$got" = "$want" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $want"; echo "     got:  $got"; fail=1; fi; }
@@ -40,6 +46,12 @@ CLAUDE_PROJECT_DIR=/x/edw t "project, not cwd" claude '{"hook_event_name":"Stop"
 t "cwd without project"   claude '{"hook_event_name":"Stop","cwd":"/x/edw/methods"}' "done|Claude [methods]|Claude task completed|fx-ok01.wav"
 FACTORY_PROJECT_DIR=/x/edw t "droid project"   droid '{"hook_event_name":"Stop","cwd":"/x/edw/methods"}' "done|Droid [edw]|Droid task completed|fx-ok01.wav"
 t "other tool silent"     claude '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/x/proj"}' ""
+# Windows agents send C:\... paths for cwd and the transcript.
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*)
+  WS() { printf '{"hook_event_name":"Stop","cwd":"C:\\\\Users\\\\me\\\\proj","transcript_path":"%s","background_tasks":%s}' "$(cygpath -w "$d/$1.jsonl" | sed 's/\\/\\\\/g')" "${2:-[]}"; }
+  t "windows paths"       claude "$(WS agent "$BG1")"    "progress|Claude [proj]|Claude subagent finished · 1 shell still running|Tink.aiff"
+  t "windows paths, sched" claude "$(WS sched)"          "quiet|Claude [proj]|Claude scheduled check|" ;;
+esac
 t "droid done"            droid  '{"hook_event_name":"Stop","cwd":"/x/proj"}' "done|Droid [proj]|Droid task completed|fx-ok01.wav"
 t "grok session end"      grok   '{"hook_event_name":"Stop","reason":"other","cwd":"/x/proj"}' ""
 t "grok question"         grok   '{"hook_event_name":"PreToolUse","tool_name":"ask_user_question","cwd":"/x/proj"}' "question|Grok [proj]|Grok asks a question|Submarine.aiff"
@@ -55,7 +67,9 @@ dm '{"type":"message","id":"execute-completion:call_1","message":{"role":"user",
 dm '{"type":"message","id":"task-9","message":{"role":"user","content":[{"type":"text","text":"Background task completed. task_id: x reason: failed"}]}}' dtask
 idle() { printf '{"processes":[]}' >"$F/background-processes.json"; printf '{"invocations":[]}' >"$F/task-invocations.json"; }
 busy() { sleep 30 & SLEEPER=$!
-  printf '{"processes":[{"pid":%s,"sessionId":"sid1"},{"pid":%s,"sessionId":"other"},{"pid":999999,"sessionId":"sid1"}]}' $SLEEPER $SLEEPER >"$F/background-processes.json"
+  # Droid on Windows records Windows pids; Git Bash keeps its own (see /proc/<pid>/winpid).
+  local live=$SLEEPER; [ -r "/proc/$SLEEPER/winpid" ] && live=$(cat "/proc/$SLEEPER/winpid")
+  printf '{"processes":[{"pid":%s,"sessionId":"sid1"},{"pid":%s,"sessionId":"other"},{"pid":999999,"sessionId":"sid1"}]}' $live $live >"$F/background-processes.json"
   printf '{"invocations":[{"parentSessionId":"sid1","status":"running"},{"parentSessionId":"sid1","status":"running"},{"parentSessionId":"sid1","status":"completed"}]}' >"$F/task-invocations.json"; }
 D() { printf '{"hook_event_name":"Stop","cwd":"/x/proj","session_id":"sid1","transcript_path":"%s"}' "$d/$1.jsonl"; }
 export FACTORY_DIR=$F
