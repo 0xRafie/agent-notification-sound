@@ -5,8 +5,9 @@
  * asks you a question, with the same titles, messages, sounds and glass banner
  * (Agent Notify.app, tinted by class) as ../notify.sh uses for
  * Claude Code, Droid and Grok. Without the banner binary it falls back to
- * osascript; other platforms can use a custom sound command and in-app
- * OMP notifications.
+ * osascript. On Windows the banner and the C:\Windows\Media sounds come from
+ * notify-overlay.exe (../windows/Overlay.cs, built by ../install.sh). Other
+ * platforms can use a custom sound command and in-app OMP notifications.
  *
  * Works with no config. To override, add to ~/.omp/agent/config.yml
  * (values shown are the defaults):
@@ -26,10 +27,11 @@
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -72,7 +74,12 @@ type NotificationSoundConfig = {
 const LABEL = "Notification Sound";
 const COMMAND_NAME = "notification-sound";
 const FACTORY_SOUND = join(homedir(), ".factory/sounds/fx-ok01.wav");
-const DEFAULT_SOUND = existsSync(FACTORY_SOUND) ? FACTORY_SOUND : "/System/Library/Sounds/Glass.aiff";
+const WINDOWS = platform() === "win32";
+// Closest Windows sounds to the macOS ones, used on Windows.
+const WM = join(process.env.SystemRoot || "C:\\Windows", "Media");
+const DEFAULT_SOUND = existsSync(FACTORY_SOUND)
+  ? FACTORY_SOUND
+  : WINDOWS ? join(WM, "Windows Notify System Generic.wav") : "/System/Library/Sounds/Glass.aiff";
 const DEFAULT_VOLUME = 1;
 const DEFAULT_COOLDOWN_MS = 1500;
 const DEFAULT_NOTIFICATION_TITLE = "OMP [{project}]";
@@ -286,15 +293,32 @@ function spawnDetached(command: string, args: string[]): { ok: true } | { ok: fa
 type NotifyClass = "done" | "failed" | "question" | "progress" | "quiet";
 
 // Same per-class sounds as notify.sh; a custom `sound` in config.yml wins for "done".
-const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = {
-  failed: "/System/Library/Sounds/Basso.aiff",
-  question: "/System/Library/Sounds/Submarine.aiff",
-  progress: "/System/Library/Sounds/Tink.aiff",
-};
+const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = WINDOWS
+  ? {
+    failed: join(WM, "Windows Critical Stop.wav"),
+    question: join(WM, "Windows Notify Messaging.wav"),
+    progress: join(WM, "Windows Balloon.wav"),
+  }
+  : {
+    failed: "/System/Library/Sounds/Basso.aiff",
+    question: "/System/Library/Sounds/Submarine.aiff",
+    progress: "/System/Library/Sounds/Tink.aiff",
+  };
 
 // Built by ../install.sh. Banner mode is shared with notify.sh (`notify.sh mode sticky`).
-const OVERLAY = join(homedir(), "Applications", "Agent Notify.app", "Contents", "MacOS", "notify-overlay");
+const OVERLAY = WINDOWS
+  ? join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "Programs", "Agent Notify", "notify-overlay.exe")
+  : join(homedir(), "Applications", "Agent Notify.app", "Contents", "MacOS", "notify-overlay");
 const MODE_FILE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-notification-sound", "mode");
+
+/** ../icons/omp.png next to the real extension folder (it is installed as a link), for the Windows banner. */
+function ompIcon(): string {
+  try {
+    const icon = join(dirname(realpathSync(dirname(fileURLToPath(import.meta.url)))), "icons", "omp.png");
+    if (existsSync(icon)) return icon;
+  } catch {}
+  return ""; // the banner draws a spark instead
+}
 
 function bannerMode(): "auto" | "sticky" {
   try {
@@ -309,9 +333,12 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
     return { command: config.command.command, args: config.command.args ?? [] };
   }
 
-  if (platform() !== "darwin" || cls === "quiet") return null;
+  if ((platform() !== "darwin" && !WINDOWS) || cls === "quiet") return null;
   const sound = cls === "done" ? config.sound : CLASS_SOUNDS[cls];
   if (!existsSync(sound)) return null;
+
+  // The banner program plays .wav files (at full volume: Windows' player has no volume setting).
+  if (WINDOWS) return existsSync(OVERLAY) ? { command: OVERLAY, args: ["--play", sound] } : null;
 
   return {
     command: "afplay",
@@ -320,6 +347,12 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
 }
 
 function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
+  if (WINDOWS) {
+    if (!existsSync(OVERLAY)) return null;
+    const { title, message } = config.desktopNotification;
+    return { command: OVERLAY, args: [cls, title, message, ompIcon(), bannerMode()] };
+  }
+
   if (platform() !== "darwin") return null;
 
   if (existsSync(OVERLAY)) {

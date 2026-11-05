@@ -12,9 +12,18 @@ mk '{"type":"user","turnOrigin":"task_notification","message":{"content":"<task-
 BG2='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"subagent","status":"running"},{"id":"m","type":"monitor","status":"running"},{"id":"c","type":"shell","status":"completed"}]'
 BG1='[{"id":"s","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
 MON='[{"id":"m","type":"monitor","status":"running"}]'
+# Expectations name the macOS sounds; on Windows the hooks use the ones in
+# C:\Windows\Media. Without Factory's fx-ok01.wav, "done" plays Glass.
+snd() { local s=$1
+  [ -f ~/.factory/sounds/fx-ok01.wav ] || s=${s//fx-ok01.wav/Glass.aiff}
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) printf '%s' "$s" | sed -e 's/Basso\.aiff/Windows Critical Stop.wav/' \
+      -e 's/Submarine\.aiff/Windows Notify Messaging.wav/' -e 's/Tink\.aiff/Windows Balloon.wav/' -e 's/Glass\.aiff/Windows Notify System Generic.wav/' ;;
+    *) printf '%s' "$s" ;;
+  esac; }
 t() { # name tool json expected
-  got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2")
-  if [ "$got" = "$4" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $4"; echo "     got:  $got"; fail=1; fi; }
+  got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2"); want=$(snd "$4")
+  if [ "$got" = "$want" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $want"; echo "     got:  $got"; fail=1; fi; }
 S() { printf '{"hook_event_name":"Stop","cwd":"/x/proj","transcript_path":"%s","background_tasks":%s}' "$d/$1.jsonl" "${2:-[]}"; }
 t "human done"            claude "$(S human)"            "done|Claude [proj]|Claude task completed|fx-ok01.wav"
 t "human, monitor only"   claude "$(S human "$MON")"     "done|Claude [proj]|Claude task completed|fx-ok01.wav"
@@ -30,6 +39,12 @@ t "no transcript"         claude '{"hook_event_name":"Stop","cwd":"/x/proj"}' "d
 t "failure"               claude '{"hook_event_name":"StopFailure","cwd":"/x/proj"}' "failed|Claude [proj]|Claude task failed|Basso.aiff"
 t "question"              claude '{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","cwd":"/x/proj"}' "question|Claude [proj]|Claude asks a question|Submarine.aiff"
 t "other tool silent"     claude '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/x/proj"}' ""
+# Windows agents send C:\... paths for cwd and the transcript.
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*)
+  WS() { printf '{"hook_event_name":"Stop","cwd":"C:\\\\Users\\\\me\\\\proj","transcript_path":"%s","background_tasks":%s}' "$(cygpath -w "$d/$1.jsonl" | sed 's/\\/\\\\/g')" "${2:-[]}"; }
+  t "windows paths"       claude "$(WS agent "$BG1")"    "progress|Claude [proj]|Claude subagent finished · 1 shell still running|Tink.aiff"
+  t "windows paths, sched" claude "$(WS sched)"          "quiet|Claude [proj]|Claude scheduled check|" ;;
+esac
 t "droid done"            droid  '{"hook_event_name":"Stop","cwd":"/x/proj"}' "done|Droid [proj]|Droid task completed|fx-ok01.wav"
 t "grok session end"      grok   '{"hook_event_name":"Stop","reason":"other","cwd":"/x/proj"}' ""
 t "grok question"         grok   '{"hook_event_name":"PreToolUse","tool_name":"ask_user_question","cwd":"/x/proj"}' "question|Grok [proj]|Grok asks a question|Submarine.aiff"
@@ -45,7 +60,9 @@ dm '{"type":"message","id":"execute-completion:call_1","message":{"role":"user",
 dm '{"type":"message","id":"task-9","message":{"role":"user","content":[{"type":"text","text":"Background task completed. task_id: x reason: failed"}]}}' dtask
 idle() { printf '{"processes":[]}' >"$F/background-processes.json"; printf '{"invocations":[]}' >"$F/task-invocations.json"; }
 busy() { sleep 30 & SLEEPER=$!
-  printf '{"processes":[{"pid":%s,"sessionId":"sid1"},{"pid":%s,"sessionId":"other"},{"pid":999999,"sessionId":"sid1"}]}' $SLEEPER $SLEEPER >"$F/background-processes.json"
+  # Droid on Windows records Windows pids; Git Bash keeps its own (see /proc/<pid>/winpid).
+  local live=$SLEEPER; [ -r "/proc/$SLEEPER/winpid" ] && live=$(cat "/proc/$SLEEPER/winpid")
+  printf '{"processes":[{"pid":%s,"sessionId":"sid1"},{"pid":%s,"sessionId":"other"},{"pid":999999,"sessionId":"sid1"}]}' $live $live >"$F/background-processes.json"
   printf '{"invocations":[{"parentSessionId":"sid1","status":"running"},{"parentSessionId":"sid1","status":"running"},{"parentSessionId":"sid1","status":"completed"}]}' >"$F/task-invocations.json"; }
 D() { printf '{"hook_event_name":"Stop","cwd":"/x/proj","session_id":"sid1","transcript_path":"%s"}' "$d/$1.jsonl"; }
 export FACTORY_DIR=$F
@@ -127,6 +144,7 @@ shell done, 1 left|progress|OMP [proj]|OMP background command finished · 1 suba
 subagent failed, 1 left|progress|OMP [proj]|OMP subagent failed · 1 shell still running|Tink.aiff
 loop run|quiet|OMP [proj]|OMP loop run|
 question|question|OMP [proj]|OMP asks a question|Submarine.aiff'
+  want=$(snd "$want")
   got=$(cd "$(dirname "$N")/omp" && NOTIFY_DRY_RUN=1 "$BUN" test.ts 2>&1)
   if [ "$got" = "$want" ]; then echo "ok   omp (8 cases)"; else echo "FAIL omp"; diff <(echo "$want") <(echo "$got"); fail=1; fi
 else
