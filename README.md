@@ -2,7 +2,7 @@
 
 macOS notifications for coding agents that tell you *why* they pinged. A finished task, a subagent that is still running, a question and a cron tick each get their own message, color and sound, so you stop switching windows for nothing.
 
-Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok.
+Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok. It also runs on Windows, with a tinted banner of its own (see [Windows](#windows)).
 
 <p align="center">
   <img src="docs/hero.png" width="420" alt="Five banners: Claude task completed (green), Codex replied with 2 subagents still running (orange), Droid asks a question (blue), OMP task failed (red), Grok scheduled check (grey)">
@@ -81,6 +81,32 @@ The glass banners don't go to Notification Center: it only shows plain macOS not
 
 On macOS before 26 the panel uses a regular blur. If `swiftc` is missing, everything falls back to the plain macOS banner.
 
+## Windows
+
+On Windows the hooks run in Git Bash, which Claude Code needs on Windows anyway. Windows notifications can't be colored either, so `notify-overlay.exe` draws a banner like the macOS one: the agent's icon, title and message on a card tinted by class, fading from the icon side. It sits in the bottom-right corner above the taskbar, where Windows shows its own notifications, and follows the system's light or dark mode.
+
+<p align="center">
+  <img src="docs/windows.png" width="400" alt="Windows banners tinted green, orange, blue, red and grey by class">
+</p>
+
+It behaves like the macOS banner. It never takes focus, stays while the pointer is on it and shows a close button, and closes on click or when you drag it to the right. Banners stack, and when one closes, the ones above it move down. `auto` and `sticky` modes work the same way. The banners don't go to the Windows notification center.
+
+`install.sh` compiles the banner from `windows/Overlay.cs` with the C# compiler that ships with Windows (.NET Framework 4), into `%LOCALAPPDATA%\Programs\Agent Notify\notify-overlay.exe`. The banner also plays the sound, so each notification starts one process.
+
+| Class | Sound on Windows |
+|---|---|
+| Done | `fx-ok01.wav`, or `Windows Notify System Generic.wav` when it is missing |
+| Still running | `Windows Balloon.wav` |
+| Question | `Windows Notify Messaging.wav` |
+| Failed | `Windows Critical Stop.wav` |
+| Quiet | none |
+
+The `.wav` files are in `C:\Windows\Media`. As on macOS, the sound plays even when Do not disturb is on.
+
+Git Bash can't see the native processes that started it, so instead of looking for Claude Code among the hook's parents, `notify.sh` checks for `CLAUDECODE=1`, which Claude Code sets in the environment its hooks inherit. The log is `%LOCALAPPDATA%\agent-notify\agent-notify.log`, and the Codex subagent count is kept in `%LOCALAPPDATA%\agent-notify\codex`. Droid shows the icon of `droid.exe` when it is on the `PATH`, and a spark otherwise.
+
+Claude Code was tested end to end on Windows 11, and OMP's cases pass in `test.sh` there. Codex, Droid and Grok use the same hooks, but they haven't been tried on Windows.
+
 ## Install
 
 ```bash
@@ -89,6 +115,8 @@ git clone https://github.com/0xRafie/agent-notification-sound ~/agent-notificati
 ```
 
 Needs macOS, `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
+
+On Windows, run the same two commands in Git Bash. It needs `jq` (`winget install jqlang.jq`); the banner is built with the C# compiler that ships with Windows, so nothing else is needed. The hooks call Git's `bash.exe` by its Windows path, and OMP's extension is linked with a directory junction.
 
 `install.sh` builds `~/Applications/Agent Notify.app` (the banner) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
 
@@ -105,7 +133,7 @@ After installing:
 
 - **Messages and sounds** live at the top of `notify.sh`, and in the header of `omp/index.ts` for OMP. OMP can also be configured from `~/.omp/agent/config.yml`.
 - **Banner mode**: `notify.sh mode auto|sticky` (see [Modes](#modes)).
-- **Colors and timing** of the banner live in `overlay/Overlay.swift`. Run `install.sh` again to rebuild after changing them.
+- **Colors and timing** of the banner live in `overlay/Overlay.swift`, and in `windows/Overlay.cs` on Windows. Run `install.sh` again to rebuild after changing them.
 - **Icons** are in `icons/`. Droid uses the icon of the installed Factory app.
 
 ## Tests
@@ -114,7 +142,7 @@ After installing:
 ./test.sh
 ```
 
-Runs every class for every agent against fixture transcripts in dry-run mode (`NOTIFY_DRY_RUN=1`), so nothing pops up. The OMP cases need [bun](https://bun.sh).
+Runs every class for every agent against fixture transcripts in dry-run mode (`NOTIFY_DRY_RUN=1`), so nothing pops up. The OMP cases need [bun](https://bun.sh). On Windows, run it from Git Bash; the expected sounds are swapped for the ones in `C:\Windows\Media`.
 
 ## Files
 
@@ -122,6 +150,7 @@ Runs every class for every agent against fixture transcripts in dry-run mode (`N
 notify.sh             hook for Claude Code, Codex, Droid and Grok
 omp/index.ts          OMP extension
 overlay/              glass banner: Overlay.swift, Info.plist and icon for Agent Notify.app
+windows/              banner for Windows: Overlay.cs, built into notify-overlay.exe
 icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks
 test.sh               dry-run tests
