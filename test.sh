@@ -14,8 +14,11 @@ BG2='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"subagent
 BG1='[{"id":"s","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
 MON='[{"id":"m","type":"monitor","status":"running"}]'
 # Expectations name the macOS sounds; on Linux the hooks use freedesktop ones.
-snd() { if [ "$(uname -s)" = Linux ]; then printf '%s' "$1" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
-  -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/'; else printf '%s' "$1"; fi; }
+# Without ~/.factory/sounds/fx-ok01.wav (a fresh machine, CI) "done" plays Glass.
+snd() { local v=$1
+  [ -f "$HOME/.factory/sounds/fx-ok01.wav" ] || v=$(printf '%s' "$v" | sed 's/fx-ok01\.wav/Glass.aiff/g')
+  if [ "$(uname -s)" = Linux ]; then printf '%s' "$v" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
+    -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/'; else printf '%s' "$v"; fi; }
 t() { # name tool json expected
   got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2"); want=$(snd "$4")
   if [ "$got" = "$want" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $want"; echo "     got:  $got"; fail=1; fi; }
