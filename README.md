@@ -1,8 +1,8 @@
 # agent-notification-sound
 
-macOS notifications for coding agents that tell you *why* they pinged. A finished task, a subagent that is still running, a question and a cron tick each get their own message, color and sound, so you stop switching windows for nothing.
+Desktop notifications for coding agents that tell you *why* they pinged. A finished task, a subagent that is still running, a question and a cron tick each get their own message, color and sound, so you stop switching windows for nothing.
 
-Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok, on macOS, on Linux, where it uses the desktop's own notifications (see [Linux](#linux)), and on Windows, with a tinted banner of its own (see [Windows](#windows)).
+Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok, on [macOS](#macos), [Linux](#linux) and [Windows](#windows).
 
 <p align="center">
   <img src="docs/hero.png" width="420" alt="Five banners: Claude task completed (green), Codex replied with 2 subagents still running (orange), Droid asks a question (blue), OMP task failed (red), Grok scheduled check (grey)">
@@ -10,7 +10,7 @@ Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok, on ma
 
 ## Notification classes
 
-| Class | Example message | Color | Sound |
+| Class | Example message | Color | Sound on macOS |
 |---|---|---|---|
 | Done | `Claude task completed` | green | `fx-ok01.wav` |
 | Still running | `Claude replied · 2 subagents still running`<br>`Claude subagent finished · 1 shell still running` | orange | Tink |
@@ -18,7 +18,9 @@ Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok, on ma
 | Failed | `Claude task failed` | red | Basso |
 | Quiet | `Claude scheduled check`, `Claude monitor event`, `Codex goal step`, `OMP loop run` | grey | none |
 
-The title is always `<Agent> [<folder>]`. "Done" only fires when the main agent has finished and nothing it started is still running. When the last background task finishes and the agent wraps up, that turn counts as done.
+Linux and Windows use their own sounds; see [Linux](#linux) and [Windows](#windows).
+
+The title is always `<Agent> [<folder>]`. For Claude Code and Droid the folder is the one the session was opened in, so a session opened in `my-app` says `Claude [my-app]` even while the agent works in a subfolder. The other agents use the hook's working directory. "Done" only fires when the main agent has finished and nothing it started is still running. When the last background task finishes and the agent wraps up, that turn counts as done.
 
 Permission prompts, idle reminders and turns you interrupt stay silent.
 
@@ -42,7 +44,7 @@ A dash means the agent has no event for it: Codex and Droid don't report failed 
 - **Grok**: `chat_history.jsonl`, next to the transcript, tags every turn Grok starts by itself with a `synthetic_reason`: `task_completed`, `subagent_completed`, `notification_drain`, `scheduler_fired`, `goal_summary` or `goal_classifier_nudge` (see `SyntheticReason` in [grok-build](https://github.com/xai-org/grok-build)). `backgroundTasks` in the `Stop` input shows what still runs.
 - **OMP**: an `async-result` message means a background job finished, and the same prompt twice in a row means a `/loop` run. `ctx.getAsyncJobSnapshot()` shows what still runs.
 
-## The banner
+## macOS
 
 macOS Notification Center banners can't be colored, so this repo draws its own: a Liquid Glass panel in the top-right corner with the agent's icon and a tint that fades from the icon side. It runs from a small app, `~/Applications/Agent Notify.app`, which `install.sh` builds from `overlay/`.
 
@@ -57,27 +59,7 @@ It behaves like a normal banner:
 - stacks when several arrive at once; when one closes, the ones below move up
 - never takes focus from the app you are using
 
-### Modes
-
-| Mode | Behavior |
-|---|---|
-| `auto` (default) | fades out after 5 seconds (3.5 for grey) |
-| `sticky` | stays until you close or swipe it away |
-
-```bash
-~/agent-notification-sound/notify.sh mode sticky   # or: mode auto
-~/agent-notification-sound/notify.sh mode          # show the current mode
-```
-
-The mode is stored in `~/.config/agent-notification-sound/mode` and applies to every agent, OMP included.
-
-### History
-
-The glass banners don't go to Notification Center: it only shows plain macOS notifications, without the class colors. Every notification is logged to `~/Library/Logs/agent-notify.log` instead:
-
-```
-2026-11-01 00:49:09	progress	Claude [dev]	Claude replied · 1 shell still running
-```
+The glass banners don't go to Notification Center, which only shows plain macOS notifications without the class colors. The log is `~/Library/Logs/agent-notify.log` (see [History](#history)).
 
 On macOS before 26 the panel uses a regular blur. If `swiftc` is missing, everything falls back to the plain macOS banner.
 
@@ -129,7 +111,35 @@ The `.wav` files are in `C:\Windows\Media`. As on macOS, the sound plays even wh
 
 Git Bash can't see the native processes that started it, so instead of looking for Claude Code among the hook's parents, `notify.sh` checks for `CLAUDECODE=1`, which Claude Code sets in the environment its hooks inherit. The log is `%LOCALAPPDATA%\agent-notify\agent-notify.log`, and the Codex subagent count is kept in `%LOCALAPPDATA%\agent-notify\codex`. Droid shows the icon of `droid.exe` when it is on the `PATH`, and a spark otherwise.
 
-Claude Code was tested end to end on Windows 11, and OMP's cases pass in `test.sh` there. Codex, Droid and Grok use the same hooks, but they haven't been tried on Windows.
+Claude Code was tested end to end on Windows 11, and `test.sh` passes there and in CI. Codex, Droid and Grok use the same hooks, but they haven't been tried on Windows.
+
+## Modes
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | fades out after 5 seconds (3.5 for grey) |
+| `sticky` | stays until you close or swipe it away |
+
+```bash
+~/agent-notification-sound/notify.sh mode sticky   # or: mode auto
+~/agent-notification-sound/notify.sh mode          # show the current mode
+```
+
+The mode is stored in `~/.config/agent-notification-sound/mode` and applies to every agent, OMP included. On Linux, `sticky` sends critical-urgency notifications (see [Linux](#linux)).
+
+## History
+
+Every notification is logged, one line each:
+
+```
+2026-11-01 00:49:09	progress	Claude [dev]	Claude replied · 1 shell still running
+```
+
+| OS | Log |
+|---|---|
+| macOS | `~/Library/Logs/agent-notify.log` |
+| Linux | `~/.local/state/agent-notify.log` |
+| Windows | `%LOCALAPPDATA%\agent-notify\agent-notify.log` |
 
 ## Install
 
@@ -138,13 +148,13 @@ git clone https://github.com/0xRafie/agent-notification-sound ~/agent-notificati
 ~/agent-notification-sound/install.sh
 ```
 
-Needs macOS, `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
+On macOS it needs `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
 
 On Linux it needs `/usr/bin/jq`, `notify-send` (libnotify) and either `pw-play` or `paplay`. Install whichever is missing with your package manager. Nothing is built: `install.sh` wires the hooks and, on GNOME, links and enables the extension.
 
 On Windows, run the same two commands in Git Bash. It needs `jq` (`winget install jqlang.jq`); the banner is built with the C# compiler that ships with Windows, so nothing else is needed. The hooks call Git's `bash.exe` by its Windows path, and OMP's extension is linked with a directory junction.
 
-`install.sh` builds `~/Applications/Agent Notify.app` (the banner) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
+`install.sh` builds the banner (`~/Applications/Agent Notify.app` on macOS, `notify-overlay.exe` on Windows) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
 
 After installing:
 
@@ -154,7 +164,7 @@ After installing:
 - **Droid and Grok**: nothing to do.
 - **GNOME**: log out and back in once, so GNOME Shell loads the extension.
 
-`fx-ok01.wav` is read from `~/.factory/sounds/`. If it isn't there, macOS Glass plays instead.
+The "done" sound is `fx-ok01.wav` from `~/.factory/sounds/`, which Factory Droid installs. Without it, each OS plays its own (Glass on macOS, `complete.oga` on Linux, `Windows Notify System Generic.wav` on Windows).
 
 ## Configuration
 
@@ -184,10 +194,13 @@ windows/              banner for Windows: Overlay.cs, built into notify-overlay.
 icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks
 test.sh               dry-run tests
+.github/workflows/    CI: test.sh on macOS, Linux and Windows, plus both banner builds
 docs/                 screenshots for this README
 ```
 
 ## Credits
+
+Linux and Windows support by [anindtz](https://github.com/anindtz).
 
 The icons belong to their owners: Clawd and Claude Code to Anthropic, Codex to OpenAI (taken from the ChatGPT app), Grok to xAI (grok.com), OMP to the oh-my-pi project (omp.sh), and Droid's icon is read from the installed Factory app. They are here only to label each agent's notifications.
 
