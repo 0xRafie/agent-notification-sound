@@ -1,0 +1,47 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash # Git Bash on Windows, which is what the hooks run in
+    steps:
+      - uses: actions/checkout@v4
+
+      # The OMP cases in test.sh need bun.
+      - uses: oven-sh/setup-bun@v2
+
+      # A Linux desktop has the freedesktop sounds and a player; the runner doesn't,
+      # and without them OMP (rightly) plays nothing.
+      - name: Linux desktop sounds
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sound-theme-freedesktop pulseaudio-utils
+
+      # notify.sh calls jq by its full path on macOS and Linux, and finds jq.exe on Windows.
+      - name: jq
+        run: if [ "$RUNNER_OS" = Windows ]; then command -v jq; else test -x /usr/bin/jq; fi
+
+      - name: test.sh
+        run: bash test.sh
+
+      - name: build the banner (macOS)
+        if: runner.os == 'macOS'
+        run: swiftc -O overlay/Overlay.swift -o "$RUNNER_TEMP/notify-overlay"
+
+      # Same compiler and options as install.sh.
+      - name: build the banner (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          csc="$(cygpath -u "$SYSTEMROOT")/Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+          "$csc" -nologo -optimize -target:winexe -out:"$(cygpath -w "$RUNNER_TEMP/notify-overlay.exe")" \
+            -r:System.Windows.Forms.dll -r:System.Drawing.dll "$(cygpath -w windows/Overlay.cs)"

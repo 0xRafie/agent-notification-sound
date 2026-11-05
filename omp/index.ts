@@ -5,9 +5,11 @@
  * asks you a question, with the same titles, messages, sounds and glass banner
  * (Agent Notify.app, tinted by class) as ../notify.sh uses for
  * Claude Code, Droid and Grok. Without the banner binary it falls back to
- * osascript. On Windows the banner and the C:\Windows\Media sounds come from
- * notify-overlay.exe (../windows/Overlay.cs, built by ../install.sh). Other
- * platforms can use a custom sound command and in-app OMP notifications.
+ * osascript. On Linux it sends a desktop notification with notify-send and
+ * plays freedesktop sounds through pw-play or paplay. On Windows the banner and
+ * the C:\Windows\Media sounds come from notify-overlay.exe
+ * (../windows/Overlay.cs, built by ../install.sh). Other platforms can use a
+ * custom sound command and in-app OMP notifications.
  *
  * Works with no config. To override, add to ~/.omp/agent/config.yml
  * (values shown are the defaults):
@@ -30,7 +32,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 type NotifyLevel = "info" | "warning" | "error";
@@ -74,12 +76,14 @@ type NotificationSoundConfig = {
 const LABEL = "Notification Sound";
 const COMMAND_NAME = "notification-sound";
 const FACTORY_SOUND = join(homedir(), ".factory/sounds/fx-ok01.wav");
+const LINUX = platform() === "linux";
 const WINDOWS = platform() === "win32";
-// Closest Windows sounds to the macOS ones, used on Windows.
+// Closest freedesktop (Linux) and Windows sounds to the macOS ones.
+const FD = "/usr/share/sounds/freedesktop/stereo";
 const WM = join(process.env.SystemRoot || "C:\\Windows", "Media");
 const DEFAULT_SOUND = existsSync(FACTORY_SOUND)
   ? FACTORY_SOUND
-  : WINDOWS ? join(WM, "Windows Notify System Generic.wav") : "/System/Library/Sounds/Glass.aiff";
+  : LINUX ? `${FD}/complete.oga` : WINDOWS ? join(WM, "Windows Notify System Generic.wav") : "/System/Library/Sounds/Glass.aiff";
 const DEFAULT_VOLUME = 1;
 const DEFAULT_COOLDOWN_MS = 1500;
 const DEFAULT_NOTIFICATION_TITLE = "OMP [{project}]";
@@ -293,7 +297,13 @@ function spawnDetached(command: string, args: string[]): { ok: true } | { ok: fa
 type NotifyClass = "done" | "failed" | "question" | "progress" | "quiet";
 
 // Same per-class sounds as notify.sh; a custom `sound` in config.yml wins for "done".
-const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = WINDOWS
+const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = LINUX
+  ? {
+    failed: `${FD}/dialog-error.oga`,
+    question: `${FD}/message-new-instant.oga`,
+    progress: `${FD}/message.oga`,
+  }
+  : WINDOWS
   ? {
     failed: join(WM, "Windows Critical Stop.wav"),
     question: join(WM, "Windows Notify Messaging.wav"),
@@ -311,13 +321,21 @@ const OVERLAY = WINDOWS
   : join(homedir(), "Applications", "Agent Notify.app", "Contents", "MacOS", "notify-overlay");
 const MODE_FILE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-notification-sound", "mode");
 
-/** ../icons/omp.png next to the real extension folder (it is installed as a link), for the Windows banner. */
+/** Absolute path of `name` on PATH, or null. */
+function which(name: string): string | null {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir && existsSync(join(dir, name))) return join(dir, name);
+  }
+  return null;
+}
+
+/** ../icons/omp.png next to the real extension folder (it is installed as a symlink, or a junction on Windows). */
 function ompIcon(): string {
   try {
     const icon = join(dirname(realpathSync(dirname(fileURLToPath(import.meta.url)))), "icons", "omp.png");
     if (existsSync(icon)) return icon;
   } catch {}
-  return ""; // the banner draws a spark instead
+  return WINDOWS ? "" : "utilities-terminal"; // Windows: the banner draws a spark instead
 }
 
 function bannerMode(): "auto" | "sticky" {
@@ -333,12 +351,21 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
     return { command: config.command.command, args: config.command.args ?? [] };
   }
 
-  if ((platform() !== "darwin" && !WINDOWS) || cls === "quiet") return null;
+  if ((platform() !== "darwin" && !LINUX && !WINDOWS) || cls === "quiet") return null;
   const sound = cls === "done" ? config.sound : CLASS_SOUNDS[cls];
   if (!existsSync(sound)) return null;
 
   // The banner program plays .wav files (at full volume: Windows' player has no volume setting).
   if (WINDOWS) return existsSync(OVERLAY) ? { command: OVERLAY, args: ["--play", sound] } : null;
+
+  if (LINUX) {
+    // The sound path stays last: the dry run in ../test.sh prints it.
+    const pwPlay = which("pw-play");
+    if (pwPlay) return { command: pwPlay, args: ["--volume", String(config.volume), sound] };
+    const paplay = which("paplay");
+    if (paplay) return { command: paplay, args: [`--volume=${Math.round(config.volume * 65536)}`, sound] };
+    return null;
+  }
 
   return {
     command: "afplay",
@@ -351,6 +378,23 @@ function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls:
     if (!existsSync(OVERLAY)) return null;
     const { title, message } = config.desktopNotification;
     return { command: OVERLAY, args: [cls, title, message, ompIcon(), bannerMode()] };
+  }
+  if (LINUX) {
+    // Same as notify.sh: sticky mode is critical urgency, which GNOME keeps on screen.
+    const notifySend = which("notify-send");
+    if (!notifySend) return null;
+    const sticky = bannerMode() === "sticky";
+    const { title, message } = config.desktopNotification;
+    return {
+      command: notifySend,
+      args: [
+        "-a", "OMP", "-i", ompIcon(),
+        "-u", sticky ? "critical" : "normal",
+        "-t", sticky ? "0" : cls === "quiet" ? "3500" : "5000",
+        "-h", `string:x-agent-notify-class:${cls}`, // read by ../gnome-extension for the class color
+        title, message,
+      ],
+    };
   }
 
   if (platform() !== "darwin") return null;

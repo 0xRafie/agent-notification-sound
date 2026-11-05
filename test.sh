@@ -1,6 +1,7 @@
 #!/bin/bash
 # Usage: test.sh  — feeds synthetic hook inputs to notify.sh in dry-run mode.
-N=~/agent-notification-sound/notify.sh; fail=0; d=$(mktemp -d)
+N="$(cd "$(dirname "$0")" && pwd)/notify.sh"; fail=0; d=$(mktemp -d)
+unset CLAUDE_PROJECT_DIR FACTORY_PROJECT_DIR # set when the tests run inside an agent
 mk() { printf '%s\n' '{"type":"assistant"}' "$1" '{"type":"user","message":{"content":[{"type":"tool_result"}]}}' >"$d/$2.jsonl"; }
 mk '{"type":"user","turnOrigin":"human","message":{"content":"halo"}}' human
 mk '{"type":"user","turnOrigin":"scheduled","isMeta":true,"message":{"content":"If the task..."}}' sched
@@ -12,11 +13,14 @@ mk '{"type":"user","turnOrigin":"task_notification","message":{"content":"<task-
 BG2='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"subagent","status":"running"},{"id":"m","type":"monitor","status":"running"},{"id":"c","type":"shell","status":"completed"}]'
 BG1='[{"id":"s","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
 MON='[{"id":"m","type":"monitor","status":"running"}]'
-# Expectations name the macOS sounds; on Windows the hooks use the ones in
-# C:\Windows\Media. Without Factory's fx-ok01.wav, "done" plays Glass.
+# Expectations name the macOS sounds; on Linux the hooks use the freedesktop
+# ones and on Windows the ones in C:\Windows\Media. Without
+# ~/.factory/sounds/fx-ok01.wav (a fresh machine, CI) "done" plays Glass.
 snd() { local s=$1
-  [ -f ~/.factory/sounds/fx-ok01.wav ] || s=${s//fx-ok01.wav/Glass.aiff}
+  [ -f "$HOME/.factory/sounds/fx-ok01.wav" ] || s=$(printf '%s' "$s" | sed 's/fx-ok01\.wav/Glass.aiff/g')
   case "$(uname -s)" in
+    Linux) printf '%s' "$s" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
+      -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/' ;;
     MINGW* | MSYS* | CYGWIN*) printf '%s' "$s" | sed -e 's/Basso\.aiff/Windows Critical Stop.wav/' \
       -e 's/Submarine\.aiff/Windows Notify Messaging.wav/' -e 's/Tink\.aiff/Windows Balloon.wav/' -e 's/Glass\.aiff/Windows Notify System Generic.wav/' ;;
     *) printf '%s' "$s" ;;
@@ -38,6 +42,9 @@ t "scheduled"             claude "$(S sched)"            "quiet|Claude [proj]|Cl
 t "no transcript"         claude '{"hook_event_name":"Stop","cwd":"/x/proj"}' "done|Claude [proj]|Claude task completed|fx-ok01.wav"
 t "failure"               claude '{"hook_event_name":"StopFailure","cwd":"/x/proj"}' "failed|Claude [proj]|Claude task failed|Basso.aiff"
 t "question"              claude '{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","cwd":"/x/proj"}' "question|Claude [proj]|Claude asks a question|Submarine.aiff"
+CLAUDE_PROJECT_DIR=/x/edw t "project, not cwd" claude '{"hook_event_name":"Stop","cwd":"/x/edw/methods"}' "done|Claude [edw]|Claude task completed|fx-ok01.wav"
+t "cwd without project"   claude '{"hook_event_name":"Stop","cwd":"/x/edw/methods"}' "done|Claude [methods]|Claude task completed|fx-ok01.wav"
+FACTORY_PROJECT_DIR=/x/edw t "droid project"   droid '{"hook_event_name":"Stop","cwd":"/x/edw/methods"}' "done|Droid [edw]|Droid task completed|fx-ok01.wav"
 t "other tool silent"     claude '{"hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/x/proj"}' ""
 # Windows agents send C:\... paths for cwd and the transcript.
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Wires notify.sh into Claude Code, Droid, Grok and Codex, and omp/ into Oh My Pi.
-# Works on macOS and Windows (run it from Git Bash).
+# Works on macOS, Linux and Windows (run it from Git Bash on Windows).
 # Safe to re-run: older notification hooks are replaced, other hooks are kept.
 set -euo pipefail
 repo="$(cd "$(dirname "$0")" && pwd)"
@@ -10,6 +10,7 @@ notify_cmd="/bin/bash $repo/notify.sh"
 # Glass banner (overlay/Overlay.swift), built as ~/Applications/Agent Notify.app:
 # Notification Center only takes apps from there, not from this folder or /tmp.
 # Without swiftc, notify.sh falls back to the plain macOS banner.
+# On Linux there is nothing to build: notify.sh and OMP use notify-send.
 app="$HOME/Applications/Agent Notify.app"
 if [ -n "$windows" ]; then
   # Git Bash. notify.sh needs jq. The banner (windows/Overlay.cs) is compiled
@@ -35,6 +36,36 @@ if [ -n "$windows" ]; then
   # Claude Code runs hooks in Git Bash; other agents may use cmd. Both accept a
   # quoted Windows path to Git's bash.exe.
   notify_cmd="\"$(cygpath -m /)bin/bash.exe\" \"$(cygpath -m "$repo")/notify.sh\""
+elif [ "$(uname -s)" = Linux ]; then
+  [ -x /usr/bin/jq ] || { echo "error: /usr/bin/jq not found (install jq with your package manager)"; exit 1; }
+  command -v notify-send >/dev/null || echo "warning: notify-send not found (libnotify); only sounds will play"
+  command -v pw-play >/dev/null || command -v paplay >/dev/null ||
+    echo "warning: neither pw-play nor paplay found; notifications will be silent"
+  # GNOME: the extension in gnome-extension/ tints the banners by class.
+  uuid=agent-notify-colors@agent-notification-sound
+  if command -v gnome-extensions >/dev/null; then
+    ext_dir="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$uuid"
+    mkdir -p "$(dirname "$ext_dir")"
+    if [ -e "$ext_dir" ] && [ ! -L "$ext_dir" ]; then
+      echo "warning: $ext_dir is a real folder; move it away and re-run"
+    else
+      ln -sfn "$repo/gnome-extension" "$ext_dir"
+      echo "linked: $ext_dir"
+      # GNOME Shell only finds a new extension after it restarts (on Wayland: log
+      # out and back in). Until then, add it to the enabled list directly.
+      if gnome-extensions enable "$uuid" 2>/dev/null; then
+        echo "enabled: $uuid"
+      else
+        cur=$(gsettings get org.gnome.shell enabled-extensions)
+        case "$cur" in
+          *"'$uuid'"*) ;;
+          "@as []" | "[]") gsettings set org.gnome.shell enabled-extensions "['$uuid']" ;;
+          *) gsettings set org.gnome.shell enabled-extensions "${cur%]}, '$uuid']" ;;
+        esac
+        echo "note: log out and back in to load the GNOME extension (banner colors)"
+      fi
+    fi
+  fi
 elif command -v swiftc >/dev/null; then
   rm -rf "$app" "$repo/bin"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/icons"

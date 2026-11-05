@@ -2,7 +2,7 @@
 
 macOS notifications for coding agents that tell you *why* they pinged. A finished task, a subagent that is still running, a question and a cron tick each get their own message, color and sound, so you stop switching windows for nothing.
 
-Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok. It also runs on Windows, with a tinted banner of its own (see [Windows](#windows)).
+Works with Claude Code, Codex CLI, Factory Droid, Oh My Pi (OMP) and Grok, on macOS, on Linux, where it uses the desktop's own notifications (see [Linux](#linux)), and on Windows, with a tinted banner of its own (see [Windows](#windows)).
 
 <p align="center">
   <img src="docs/hero.png" width="420" alt="Five banners: Claude task completed (green), Codex replied with 2 subagents still running (orange), Droid asks a question (blue), OMP task failed (red), Grok scheduled check (grey)">
@@ -81,6 +81,30 @@ The glass banners don't go to Notification Center: it only shows plain macOS not
 
 On macOS before 26 the panel uses a regular blur. If `swiftc` is missing, everything falls back to the plain macOS banner.
 
+## Linux
+
+Linux has no glass banner. The hooks send a regular desktop notification with `notify-send`, so it looks like every other notification on your desktop. On GNOME it slides in at the top center and stays in the notification list afterwards. The title, message, agent icon and sound follow the same classes as on macOS.
+
+<p align="center">
+  <img src="docs/linux.png" width="420" alt="GNOME banners tinted green, orange, blue, red and grey by class">
+</p>
+
+The notification server draws the banner, so the class colors need a small GNOME Shell extension in `gnome-extension/`. Each notification carries its class in an `x-agent-notify-class` hint, and the extension tints that banner with the same colors as the macOS one, fading from the icon side. Notifications from other apps are left alone. `install.sh` links and enables it, and GNOME Shell loads it after you log out and back in. It is written for GNOME 50. On other desktops, and on GNOME without the extension, the banners keep the default color.
+
+| Class | Sound on Linux |
+|---|---|
+| Done | `fx-ok01.wav`, or `complete.oga` when it is missing |
+| Still running | `message.oga` |
+| Question | `message-new-instant.oga` |
+| Failed | `dialog-error.oga` |
+| Quiet | none |
+
+The `.oga` files come from the freedesktop sound theme in `/usr/share/sounds/freedesktop/stereo/`. They are played with `pw-play`, or with `paplay` when PipeWire isn't installed. Like `afplay` on macOS, the sound plays even when Do Not Disturb is on.
+
+In `sticky` mode notifications are sent with critical urgency, since that is the only urgency GNOME keeps on screen until you close it. GNOME also shows critical notifications during Do Not Disturb. In `auto` mode GNOME decides how long a banner stays, while KDE, dunst and mako use a 5 second timeout, or 3.5 seconds for quiet ones.
+
+The log is `~/.local/state/agent-notify.log` (under `$XDG_STATE_HOME` when set), and the Codex subagent count is kept in `~/.cache/agent-notify/codex`. Droid has no icon on Linux, so its notifications use the generic terminal icon.
+
 ## Windows
 
 On Windows the hooks run in Git Bash, which Claude Code needs on Windows anyway. Windows notifications can't be colored either, so `notify-overlay.exe` draws a banner like the macOS one: the agent's icon, title and message on a card tinted by class, fading from the icon side. It sits in the bottom-right corner above the taskbar, where Windows shows its own notifications, and follows the system's light or dark mode.
@@ -116,6 +140,8 @@ git clone https://github.com/0xRafie/agent-notification-sound ~/agent-notificati
 
 Needs macOS, `jq` (ships with macOS) and the Xcode Command Line Tools for `swiftc` (`xcode-select --install`).
 
+On Linux it needs `/usr/bin/jq`, `notify-send` (libnotify) and either `pw-play` or `paplay`. Install whichever is missing with your package manager. Nothing is built: `install.sh` wires the hooks and, on GNOME, links and enables the extension.
+
 On Windows, run the same two commands in Git Bash. It needs `jq` (`winget install jqlang.jq`); the banner is built with the C# compiler that ships with Windows, so nothing else is needed. The hooks call Git's `bash.exe` by its Windows path, and OMP's extension is linked with a directory junction.
 
 `install.sh` builds `~/Applications/Agent Notify.app` (the banner) and adds hooks for every agent it finds. Running it again is safe: it replaces its own older hooks and leaves your other hooks alone. The hooks run scripts from this folder, so keep the clone where it is, or run `install.sh` again after moving it.
@@ -126,6 +152,7 @@ After installing:
 - **Codex**: open `/hooks` and trust the new hooks. Codex skips new hooks until you do.
 - **OMP**: restart running sessions.
 - **Droid and Grok**: nothing to do.
+- **GNOME**: log out and back in once, so GNOME Shell loads the extension.
 
 `fx-ok01.wav` is read from `~/.factory/sounds/`. If it isn't there, macOS Glass plays instead.
 
@@ -142,7 +169,9 @@ After installing:
 ./test.sh
 ```
 
-Runs every class for every agent against fixture transcripts in dry-run mode (`NOTIFY_DRY_RUN=1`), so nothing pops up. The OMP cases need [bun](https://bun.sh). On Windows, run it from Git Bash; the expected sounds are swapped for the ones in `C:\Windows\Media`.
+Runs every class for every agent against fixture transcripts in dry-run mode (`NOTIFY_DRY_RUN=1`), so nothing pops up. The OMP cases need [bun](https://bun.sh). On Linux the expected sounds are swapped for the freedesktop ones. On Windows, run it from Git Bash; the expected sounds are swapped for the ones in `C:\Windows\Media`.
+
+GitHub Actions runs it on macOS, Linux and Windows for every push and pull request, and builds the macOS and Windows banners (`.github/workflows/test.yml`).
 
 ## Files
 
@@ -150,6 +179,7 @@ Runs every class for every agent against fixture transcripts in dry-run mode (`N
 notify.sh             hook for Claude Code, Codex, Droid and Grok
 omp/index.ts          OMP extension
 overlay/              glass banner: Overlay.swift, Info.plist and icon for Agent Notify.app
+gnome-extension/      GNOME Shell extension that colors the Linux banners by class
 windows/              banner for Windows: Overlay.cs, built into notify-overlay.exe
 icons/                Claude Code (Clawd), Codex, Grok and OMP icons
 install.sh            builds the banner and wires the hooks

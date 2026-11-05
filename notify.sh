@@ -11,16 +11,20 @@
 #   quiet     "Claude scheduled check" / "Claude monitor event" / "Codex goal step"   no sound
 #             (Grok has all three)
 # Every notification is logged to ~/Library/Logs/agent-notify.log.
+# On Linux: a desktop notification (notify-send) with the agent's icon, the same
+# messages, freedesktop sounds played through PipeWire/PulseAudio, and the log in
+# ~/.local/state/agent-notify.log.
 # On Windows (the hooks run in Git Bash): a banner tinted by class, drawn by
 # notify-overlay.exe (windows/Overlay.cs), sounds from C:\Windows\Media, and the
 # log in %LOCALAPPDATA%\agent-notify\agent-notify.log.
 # NOTIFY_DRY_RUN=1 prints "<class>|<title>|<message>|<sound>" instead of notifying.
 
+linux=; [ "$(uname -s)" = Linux ] && linux=1
 windows=
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*) windows=1 local_app=$(cygpath -u "${LOCALAPPDATA:-$HOME/AppData/Local}") ;;
 esac
-# jq: /usr/bin/jq on macOS. On Windows, jq.exe from winget, which may not be on
+# jq: /usr/bin/jq on macOS and Linux. On Windows, jq.exe from winget, which may not be on
 # the hook's PATH until the agent restarts, run with -b: it would end every
 # line with \r\n otherwise.
 if [ -n "$windows" ]; then
@@ -66,7 +70,8 @@ if [ "$tool" = codex ]; then
   fi
   # Codex hooks don't list running subagents, so keep one file per running
   # subagent (SubagentStart adds it, SubagentStop removes it). Silent events.
-  cache=$HOME/Library/Caches; [ -n "$windows" ] && cache=$local_app
+  cache=$HOME/Library/Caches; [ -n "$linux" ] && cache=${XDG_CACHE_HOME:-$HOME/.cache}
+  [ -n "$windows" ] && cache=$local_app
   agents_dir="${CODEX_AGENTS_DIR:-$cache/agent-notify/codex}/$(field .session_id)"
   case "$(field .hook_event_name)" in
     SubagentStart) mkdir -p "$agents_dir" && touch "$agents_dir/$(field .agent_id | tr '/' '_')"; exit 0 ;;
@@ -242,6 +247,16 @@ case "$class" in
   progress) sound=/System/Library/Sounds/Tink.aiff ;;
   quiet) sound= ;;
 esac
+# Linux has no macOS system sounds: use the closest freedesktop ones.
+if [ -n "$linux" ]; then
+  fd=/usr/share/sounds/freedesktop/stereo
+  case "${sound##*/}" in
+    Glass.aiff) sound=$fd/complete.oga ;;
+    Basso.aiff) sound=$fd/dialog-error.oga ;;
+    Submarine.aiff) sound=$fd/message-new-instant.oga ;;
+    Tink.aiff) sound=$fd/message.oga ;;
+  esac
+fi
 # Windows: the closest sounds in C:\Windows\Media, all .wav, which the banner plays.
 if [ -n "$windows" ]; then
   wm="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/Media"
@@ -253,7 +268,15 @@ if [ -n "$windows" ]; then
   esac
 fi
 
-cwd=$(field .cwd)
+# The hook's cwd follows the agent's shell, so after a `cd` into a subfolder it
+# names that subfolder. Claude Code and Droid also pass the folder the session
+# was opened in, which is the project the title should name.
+case "$tool" in
+  claude) project=${CLAUDE_PROJECT_DIR:-} ;;
+  droid) project=${FACTORY_PROJECT_DIR:-} ;;
+  *) project= ;;
+esac
+cwd=${project:-$(field .cwd)}
 title="$name [$(basename "${cwd:-$PWD}")]"
 
 if [ -n "${NOTIFY_DRY_RUN:-}" ]; then
@@ -277,7 +300,9 @@ elif [ "$tool" = claude ]; then
 fi
 
 log="$HOME/Library/Logs/agent-notify.log"
-if [ -n "$windows" ]; then
+if [ -n "$linux" ]; then
+  log="${XDG_STATE_HOME:-$HOME/.local/state}/agent-notify.log"
+elif [ -n "$windows" ]; then
   log="$local_app/agent-notify/agent-notify.log"
   mkdir -p "$(dirname "$log")"
 fi
@@ -289,7 +314,25 @@ printf '%s\t%s\t%s\t%s\n' "$(date '+%F %T')" "$class" "$title" "$message" >>"$lo
 # Title and message go in as argv, never into script source.
 overlay="${AGENT_NOTIFY_APP:-$HOME/Applications/Agent Notify.app}/Contents/MacOS/notify-overlay"
 mode=$(cat "$mode_file" 2>/dev/null); [ "$mode" = sticky ] || mode=auto
-if [ -n "$windows" ]; then
+if [ -n "$linux" ]; then
+  # A regular desktop notification. Notification servers draw their own banner,
+  # so the class colors need gnome-extension/ (it reads the class hint). Sticky mode uses critical urgency, the only
+  # one GNOME keeps on screen until you close it (it also shows during Do Not
+  # Disturb). The -t timeout is ignored by GNOME but used by KDE, dunst, mako.
+  icon="$(cd "$(dirname "$0")" && pwd)/icons/$tool.png"
+  [ -f "$icon" ] || icon=utilities-terminal
+  urgency=normal timeout=5000
+  [ "$class" = quiet ] && timeout=3500
+  [ "$mode" = sticky ] && urgency=critical timeout=0
+  notify-send -a "$name" -i "$icon" -u "$urgency" -t "$timeout" -h "string:x-agent-notify-class:$class" \
+    "$title" "$message" >/dev/null 2>&1
+  if [ -n "$sound" ] && [ -f "$sound" ]; then
+    if command -v pw-play >/dev/null; then pw-play "$sound"
+    elif command -v paplay >/dev/null; then paplay "$sound"
+    else canberra-gtk-play -f "$sound"
+    fi >/dev/null 2>&1
+  fi
+elif [ -n "$windows" ]; then
   # Banner tinted by class, drawn by notify-overlay.exe (windows/Overlay.cs,
   # built by install.sh). It plays the sound too and stays up a while, so it
   # runs detached. Files go in as Windows paths. Droid shows droid.exe's icon.
@@ -320,7 +363,7 @@ on run argv
 end run
 APPLESCRIPT
 fi
-[ -n "$sound" ] && [ -z "$windows" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
+[ -n "$sound" ] && [ -z "$linux$windows" ] && /usr/bin/afplay "$sound" >/dev/null 2>&1
 
 [ "$tool" = claude ] && printf '{"suppressOutput":true}'
 exit 0
