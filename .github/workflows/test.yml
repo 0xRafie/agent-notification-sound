@@ -18,6 +18,12 @@ jobs:
       # The OMP cases in test.sh need bun.
       - uses: oven-sh/setup-bun@v2
 
+      # A Linux desktop has the freedesktop sounds and a player; the runner doesn't,
+      # and without them OMP (rightly) plays nothing.
+      - name: Linux desktop sounds
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sound-theme-freedesktop pulseaudio-utils
+
       # notify.sh calls jq by its full path.
       - name: jq at /usr/bin/jq
         run: test -x /usr/bin/jq
