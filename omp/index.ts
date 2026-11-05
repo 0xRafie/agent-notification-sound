@@ -5,8 +5,9 @@
  * asks you a question, with the same titles, messages, sounds and glass banner
  * (Agent Notify.app, tinted by class) as ../notify.sh uses for
  * Claude Code, Droid and Grok. Without the banner binary it falls back to
- * osascript; other platforms can use a custom sound command and in-app
- * OMP notifications.
+ * osascript. On Linux it sends a desktop notification with notify-send and
+ * plays freedesktop sounds through pw-play or paplay. Other platforms can use a
+ * custom sound command and in-app OMP notifications.
  *
  * Works with no config. To override, add to ~/.omp/agent/config.yml
  * (values shown are the defaults):
@@ -26,10 +27,11 @@
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
-import { basename, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 type NotifyLevel = "info" | "warning" | "error";
 
@@ -72,7 +74,10 @@ type NotificationSoundConfig = {
 const LABEL = "Notification Sound";
 const COMMAND_NAME = "notification-sound";
 const FACTORY_SOUND = join(homedir(), ".factory/sounds/fx-ok01.wav");
-const DEFAULT_SOUND = existsSync(FACTORY_SOUND) ? FACTORY_SOUND : "/System/Library/Sounds/Glass.aiff";
+const LINUX = platform() === "linux";
+// Closest freedesktop sounds to the macOS ones, used on Linux.
+const FD = "/usr/share/sounds/freedesktop/stereo";
+const DEFAULT_SOUND = existsSync(FACTORY_SOUND) ? FACTORY_SOUND : LINUX ? `${FD}/complete.oga` : "/System/Library/Sounds/Glass.aiff";
 const DEFAULT_VOLUME = 1;
 const DEFAULT_COOLDOWN_MS = 1500;
 const DEFAULT_NOTIFICATION_TITLE = "OMP [{project}]";
@@ -286,15 +291,38 @@ function spawnDetached(command: string, args: string[]): { ok: true } | { ok: fa
 type NotifyClass = "done" | "failed" | "question" | "progress" | "quiet";
 
 // Same per-class sounds as notify.sh; a custom `sound` in config.yml wins for "done".
-const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = {
-  failed: "/System/Library/Sounds/Basso.aiff",
-  question: "/System/Library/Sounds/Submarine.aiff",
-  progress: "/System/Library/Sounds/Tink.aiff",
-};
+const CLASS_SOUNDS: Record<Exclude<NotifyClass, "done" | "quiet">, string> = LINUX
+  ? {
+    failed: `${FD}/dialog-error.oga`,
+    question: `${FD}/message-new-instant.oga`,
+    progress: `${FD}/message.oga`,
+  }
+  : {
+    failed: "/System/Library/Sounds/Basso.aiff",
+    question: "/System/Library/Sounds/Submarine.aiff",
+    progress: "/System/Library/Sounds/Tink.aiff",
+  };
 
 // Built by ../install.sh. Banner mode is shared with notify.sh (`notify.sh mode sticky`).
 const OVERLAY = join(homedir(), "Applications", "Agent Notify.app", "Contents", "MacOS", "notify-overlay");
 const MODE_FILE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-notification-sound", "mode");
+
+/** Absolute path of `name` on PATH, or null. */
+function which(name: string): string | null {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir && existsSync(join(dir, name))) return join(dir, name);
+  }
+  return null;
+}
+
+/** ../icons/omp.png next to the real extension folder (it is installed as a symlink). */
+function ompIcon(): string {
+  try {
+    const icon = join(dirname(realpathSync(dirname(fileURLToPath(import.meta.url)))), "icons", "omp.png");
+    if (existsSync(icon)) return icon;
+  } catch {}
+  return "utilities-terminal";
+}
 
 function bannerMode(): "auto" | "sticky" {
   try {
@@ -309,9 +337,18 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
     return { command: config.command.command, args: config.command.args ?? [] };
   }
 
-  if (platform() !== "darwin" || cls === "quiet") return null;
+  if ((platform() !== "darwin" && !LINUX) || cls === "quiet") return null;
   const sound = cls === "done" ? config.sound : CLASS_SOUNDS[cls];
   if (!existsSync(sound)) return null;
+
+  if (LINUX) {
+    // The sound path stays last: the dry run in ../test.sh prints it.
+    const pwPlay = which("pw-play");
+    if (pwPlay) return { command: pwPlay, args: ["--volume", String(config.volume), sound] };
+    const paplay = which("paplay");
+    if (paplay) return { command: paplay, args: [`--volume=${Math.round(config.volume * 65536)}`, sound] };
+    return null;
+  }
 
   return {
     command: "afplay",
@@ -320,6 +357,24 @@ function resolveSoundCommand(config: NotificationSoundConfig, cls: NotifyClass =
 }
 
 function resolveDesktopNotificationCommand(config: NotificationSoundConfig, cls: NotifyClass = "done"): { command: string; args: string[] } | null {
+  if (LINUX) {
+    // Same as notify.sh: sticky mode is critical urgency, which GNOME keeps on screen.
+    const notifySend = which("notify-send");
+    if (!notifySend) return null;
+    const sticky = bannerMode() === "sticky";
+    const { title, message } = config.desktopNotification;
+    return {
+      command: notifySend,
+      args: [
+        "-a", "OMP", "-i", ompIcon(),
+        "-u", sticky ? "critical" : "normal",
+        "-t", sticky ? "0" : cls === "quiet" ? "3500" : "5000",
+        "-h", `string:x-agent-notify-class:${cls}`, // read by ../gnome-extension for the class color
+        title, message,
+      ],
+    };
+  }
+
   if (platform() !== "darwin") return null;
 
   if (existsSync(OVERLAY)) {

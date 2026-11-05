@@ -1,0 +1,7 @@
+{
+  "uuid": "agent-notify-colors@agent-notification-sound",
+  "name": "Agent Notify Colors",
+  "description": "Tints GNOME notification banners from agent-notification-sound by class: green done, orange still running, blue question, red failed, grey quiet.",
+  "shell-version": ["50"],
+  "url": "https://github.com/0xRafie/agent-notification-sound"
+}

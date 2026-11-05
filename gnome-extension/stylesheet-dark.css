@@ -1,0 +1,39 @@
+/* Class tints for the dark shell theme: the upstream banner colors at 45% on the
+   icon side fading to 4% on the right, blended over the theme's banner color.
+   St draws the box-shadow of a gradient background as a square box, so the
+   tinted banners go without the theme's (faint) shadow. */
+
+.notification-banner.agent-notify-done {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #44885b;
+  background-gradient-end: #53595a;
+  box-shadow: none;
+}
+
+.notification-banner.agent-notify-progress {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #a17536;
+  background-gradient-end: #5b5757;
+  box-shadow: none;
+}
+
+.notification-banner.agent-notify-question {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #336aa4;
+  background-gradient-end: #515661;
+  box-shadow: none;
+}
+
+.notification-banner.agent-notify-failed {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #a14947;
+  background-gradient-end: #5b5358;
+  box-shadow: none;
+}
+
+.notification-banner.agent-notify-quiet {
+  background-gradient-direction: horizontal;
+  background-gradient-start: #6e6e74;
+  background-gradient-end: #56565c;
+  box-shadow: none;
+}

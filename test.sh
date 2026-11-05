@@ -13,9 +13,12 @@ mk '{"type":"user","turnOrigin":"task_notification","message":{"content":"<task-
 BG2='[{"id":"a","type":"subagent","status":"running"},{"id":"b","type":"subagent","status":"running"},{"id":"m","type":"monitor","status":"running"},{"id":"c","type":"shell","status":"completed"}]'
 BG1='[{"id":"s","type":"shell","status":"running"},{"id":"m","type":"monitor","status":"running"}]'
 MON='[{"id":"m","type":"monitor","status":"running"}]'
+# Expectations name the macOS sounds; on Linux the hooks use freedesktop ones.
+snd() { if [ "$(uname -s)" = Linux ]; then printf '%s' "$1" | sed -e 's/Basso\.aiff/dialog-error.oga/' \
+  -e 's/Submarine\.aiff/message-new-instant.oga/' -e 's/Tink\.aiff/message.oga/' -e 's/Glass\.aiff/complete.oga/'; else printf '%s' "$1"; fi; }
 t() { # name tool json expected
-  got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2")
-  if [ "$got" = "$4" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $4"; echo "     got:  $got"; fail=1; fi; }
+  got=$(printf '%s' "$3" | NOTIFY_DRY_RUN=1 bash "$N" "$2"); want=$(snd "$4")
+  if [ "$got" = "$want" ]; then echo "ok   $1"; else echo "FAIL $1"; echo "     want: $want"; echo "     got:  $got"; fail=1; fi; }
 S() { printf '{"hook_event_name":"Stop","cwd":"/x/proj","transcript_path":"%s","background_tasks":%s}' "$d/$1.jsonl" "${2:-[]}"; }
 t "human done"            claude "$(S human)"            "done|Claude [proj]|Claude task completed|fx-ok01.wav"
 t "human, monitor only"   claude "$(S human "$MON")"     "done|Claude [proj]|Claude task completed|fx-ok01.wav"
@@ -131,6 +134,7 @@ shell done, 1 left|progress|OMP [proj]|OMP background command finished · 1 suba
 subagent failed, 1 left|progress|OMP [proj]|OMP subagent failed · 1 shell still running|Tink.aiff
 loop run|quiet|OMP [proj]|OMP loop run|
 question|question|OMP [proj]|OMP asks a question|Submarine.aiff'
+  want=$(snd "$want")
   got=$(cd "$(dirname "$N")/omp" && NOTIFY_DRY_RUN=1 "$BUN" test.ts 2>&1)
   if [ "$got" = "$want" ]; then echo "ok   omp (8 cases)"; else echo "FAIL omp"; diff <(echo "$want") <(echo "$got"); fail=1; fi
 else
